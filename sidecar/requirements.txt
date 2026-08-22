@@ -1,0 +1,5 @@
+# PaddlePaddle publishes different wheels for some platforms and GPU variants.
+# This is the baseline CPU environment used by the MVP.
+paddlepaddle==3.3.0
+paddlex[ocr-core]==3.7.2
+paddleocr==3.7.0

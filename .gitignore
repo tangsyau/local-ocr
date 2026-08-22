@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+sidecar/build/
+sidecar/dist/
+src-tauri/target/
+src-tauri/binaries/ocr-sidecar-*
+!src-tauri/binaries/.gitkeep
+
