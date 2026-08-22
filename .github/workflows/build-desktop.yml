@@ -80,13 +80,13 @@ jobs:
 
       - name: Restore frozen OCR sidecar
         id: sidecar-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: src-tauri/binaries/ocr-sidecar-*
           key: ocr-sidecar-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('sidecar/**/*.py', 'sidecar/requirements*.txt', 'scripts/build-sidecar.py', 'scripts/platform_target.py') }}
 
       - name: Restore PaddleOCR models
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.paddlex/official_models
           key: paddle-models-${{ runner.os }}-pp-ocrv5-mobile-v1

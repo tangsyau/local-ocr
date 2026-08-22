@@ -1,5 +1,8 @@
 # PaddlePaddle publishes different wheels for some platforms and GPU variants.
 # This is the baseline CPU environment used by the MVP.
-paddlepaddle==3.3.0
+# PaddlePaddle 3.3.x has a known CPU oneDNN/PIR regression that crashes
+# PP-OCRv5 inference with ConvertPirAttribute2RuntimeAttribute. 3.2.2 is the
+# upstream-recommended compatibility version until that regression is fixed.
+paddlepaddle==3.2.2
 paddlex[ocr-core]==3.7.2
 paddleocr==3.7.0

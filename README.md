@@ -102,8 +102,8 @@ npm run tauri build
 工作流也会在推送 `v*` 标签时自动运行，例如：
 
 ```bash
-git tag v0.2.7
-git push origin v0.2.7
+git tag v0.2.8
+git push origin v0.2.8
 ```
 
 构建产物作为 Actions Artifact 保存 14 天。当前产物没有代码签名，因此 Windows 首次运行可能显示 SmartScreen 警告。正式公开发布前还应修改 `src-tauri/tauri.conf.json` 中的 `com.example.localocr` 标识，并配置 Windows 代码签名。
@@ -121,8 +121,9 @@ git push origin v0.2.7
 5. 启动冻结后的 sidecar；
 6. 下载并载入 PP-OCRv5 mobile 模型；
 7. 按文件名加载 Paddle MKL 原生运行库，确认冻结包的动态库搜索路径有效；
-8. 确认 NDJSON 的 `ping`、`prepare` 和 `shutdown` 均正常返回；
-9. 最后才执行 Tauri 安装包构建。
+8. 生成一张本地测试 PNG，并让冻结后的 sidecar 完整执行一次 `recognize` 推理；
+9. 确认 NDJSON 的 `ping`、`prepare`、`recognize` 和 `shutdown` 均正常返回；
+10. 最后才执行 Tauri 安装包构建。
 
 因此第一轮 Actions 如果失败，日志通常能够明确区分是 Paddle/PyInstaller 问题，还是 Tauri 安装包问题。
 
@@ -131,6 +132,8 @@ git push origin v0.2.7
 PaddleX 会在创建 OCR pipeline 前通过 `importlib.metadata` 检查 `ocr-core` 依赖。仅把 Python 模块交给 PyInstaller 还不够，冻结后的 sidecar 也必须包含这些包的 `.dist-info` 元数据。本项目已显式锁定 `paddlex[ocr-core]`，并由 `scripts/build-sidecar.py` 复制 PaddleX、OpenCV、PyPDFium2、Shapely 等 OCR 依赖的分发元数据；不要删掉这些 `--copy-metadata` 参数。
 
 Paddle 的 CPU predictor 还会在运行时按文件名动态载入 MKL。`--collect-all paddle` 会保留 `paddle/libs` 中的原文件，但单文件应用的系统动态库搜索路径只包含解压目录顶层，因此构建脚本还会把 `mklml.dll` 及其 `libiomp5md.dll` 依赖（Windows），或 `libmklml_intel.so`（Linux）加入顶层。烟雾测试使用 UTF-8 原始字节输出 stderr，避免 Windows runner 的 CP1252 控制台掩盖真实错误。
+
+当前固定使用 `paddlepaddle==3.2.2`。PaddlePaddle 3.3.x 的 CPU oneDNN/PIR 路径存在已知回归，PP-OCRv5 在第一次实际推理时可能报 `ConvertPirAttribute2RuntimeAttribute`；仅初始化模型无法发现该问题，因此不要在没有完成真实推理烟雾测试的情况下升级 PaddlePaddle。
 
 ### 安装后显示“sidecar 尚未启动”
 

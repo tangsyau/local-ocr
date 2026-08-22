@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -28,6 +29,22 @@ class SmokeSidecarEncodingTests(unittest.TestCase):
             SMOKE.sys.stderr = original
 
         self.assertEqual(raw.getvalue().decode("utf-8").strip(), "中文错误：libmklml_intel.so")
+
+    def test_generated_smoke_image_is_a_png(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            image_path = Path(temp_dir) / "smoke.png"
+            SMOKE.write_smoke_png(image_path)
+            payload = image_path.read_bytes()
+
+        self.assertTrue(payload.startswith(b"\x89PNG\r\n\x1a\n"))
+        self.assertGreater(len(payload), 100)
+
+    def test_recognize_request_contains_local_path(self) -> None:
+        payload = SMOKE.json.loads(
+            SMOKE.request("smoke-recognize", "recognize", {"path": "C:/tmp/smoke.png", "scoreThreshold": 0.5})
+        )
+        self.assertEqual(payload["method"], "recognize")
+        self.assertEqual(payload["params"]["path"], "C:/tmp/smoke.png")
 
 
 if __name__ == "__main__":
