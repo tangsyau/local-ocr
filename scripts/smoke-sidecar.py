@@ -3,10 +3,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
 import struct
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import zlib
 from pathlib import Path
 from typing import Any
@@ -72,6 +75,11 @@ def main() -> int:
         action="store_true",
         help="also load/download the PaddleOCR models and run one local inference",
     )
+    parser.add_argument(
+        "--all-profiles",
+        action="store_true",
+        help="with --prepare, verify both fast and accurate model profiles",
+    )
     args = parser.parse_args()
 
     suffix = ".exe" if os.name == "nt" else ""
@@ -80,55 +88,80 @@ def main() -> int:
         raise FileNotFoundError(f"Sidecar not found: {binary}")
 
     with tempfile.TemporaryDirectory(prefix="local-ocr-smoke-") as temp_dir:
-        requests = [request("smoke-ping", "ping"), request("smoke-runtime", "runtime_check")]
-        expected = {"smoke-ping", "smoke-runtime", "smoke-shutdown"}
+        request_lines = [request("smoke-ping", "ping"), request("smoke-runtime", "runtime_check")]
         if args.prepare:
             image_path = Path(temp_dir) / "inference-smoke.png"
             write_smoke_png(image_path)
-            requests.append(request("smoke-prepare", "prepare"))
-            requests.append(
-                request(
-                    "smoke-recognize",
-                    "recognize",
-                    {"path": str(image_path), "scoreThreshold": 0.5},
+            profiles = ("fast", "accurate") if args.all_profiles else ("fast",)
+            for profile in profiles:
+                request_lines.append(request(f"smoke-prepare-{profile}", "prepare", {"profile": profile}))
+                request_lines.append(
+                    request(
+                        f"smoke-recognize-{profile}",
+                        "recognize",
+                        {"path": str(image_path), "scoreThreshold": 0.5},
+                    )
                 )
-            )
-            expected.update({"smoke-prepare", "smoke-recognize"})
-        requests.append(request("smoke-shutdown", "shutdown"))
+        request_lines.append(request("smoke-shutdown", "shutdown"))
 
-        completed = subprocess.run(
+        process = subprocess.Popen(
             [str(binary)],
-            input="\n".join(requests) + "\n",
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
-            capture_output=True,
-            timeout=20 * 60,
-            check=False,
+            bufsize=1,
         )
-    if completed.stderr:
-        write_utf8_stderr(completed.stderr)
-    if completed.returncode != 0:
-        raise RuntimeError(f"Sidecar exited with code {completed.returncode}")
+        assert process.stdin is not None and process.stdout is not None and process.stderr is not None
+        stdout_lines: queue.Queue[str | None] = queue.Queue()
 
-    results: dict[str, dict[str, Any]] = {}
-    for line in completed.stdout.splitlines():
-        try:
-            message = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        request_id = message.get("id")
-        if request_id in expected and message.get("type") in {"result", "error"}:
-            results[str(request_id)] = message
+        def pump_stdout() -> None:
+            for line in process.stdout:
+                stdout_lines.put(line)
+            stdout_lines.put(None)
 
-    missing = expected.difference(results)
-    if missing:
-        raise RuntimeError(f"Sidecar did not answer: {', '.join(sorted(missing))}")
-    errors = [message for message in results.values() if message.get("type") == "error"]
-    if errors:
-        raise RuntimeError(f"Sidecar smoke test failed: {errors}")
+        def pump_stderr() -> None:
+            for line in process.stderr:
+                write_utf8_stderr(line)
 
-    print(f"Sidecar smoke test passed: {', '.join(sorted(expected))}")
+        stdout_thread = threading.Thread(target=pump_stdout, daemon=True)
+        stderr_thread = threading.Thread(target=pump_stderr, daemon=True)
+        stdout_thread.start()
+        stderr_thread.start()
+
+        results: dict[str, dict[str, Any]] = {}
+        for line in request_lines:
+            request_id = str(json.loads(line)["id"])
+            process.stdin.write(line + "\n")
+            process.stdin.flush()
+            deadline = time.monotonic() + 20 * 60
+            while request_id not in results:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(f"Sidecar did not finish {request_id}")
+                output = stdout_lines.get(timeout=remaining)
+                if output is None:
+                    raise RuntimeError(f"Sidecar exited before answering {request_id}")
+                try:
+                    message = json.loads(output)
+                except json.JSONDecodeError:
+                    continue
+                message_id = message.get("id")
+                if message_id and message.get("type") in {"result", "error"}:
+                    results[str(message_id)] = message
+            if results[request_id].get("type") == "error":
+                raise RuntimeError(f"Sidecar smoke test failed: {results[request_id]}")
+
+        process.stdin.close()
+        return_code = process.wait(timeout=60)
+        stdout_thread.join(timeout=5)
+        stderr_thread.join(timeout=5)
+        if return_code != 0:
+            raise RuntimeError(f"Sidecar exited with code {return_code}")
+
+    print(f"Sidecar smoke test passed: {', '.join(sorted(results))}")
     return 0
 
 

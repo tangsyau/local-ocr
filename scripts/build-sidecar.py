@@ -73,6 +73,10 @@ def main() -> int:
         "--collect-all",
         "paddle",
     ]
+    # Keep the console-enabled bootloader so Tauri can continue to pipe NDJSON
+    # through stdin/stdout, but hide the otherwise empty console on Windows.
+    if os.name == "nt":
+        command.extend(["--hide-console", "hide-early"])
     # Paddle loads MKL by filename at predictor creation time. Put additional
     # top-level entries in the onefile extraction directory so the bootloader's
     # DLL/LD_LIBRARY_PATH search path can resolve them and their dependencies.

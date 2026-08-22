@@ -4,17 +4,21 @@
 
 ## 当前功能
 
-- 选择 PNG、JPEG、WebP、BMP、TIFF 或 PDF；
-- 首次运行时联网下载 PP-OCRv5 mobile 检测与识别模型；
-- 模型常驻 Python sidecar，连续任务不重复初始化；
+- 批量选择 PNG、JPEG、WebP、BMP、TIFF 或 PDF，并按队列顺序识别；
+- 在 PP-OCRv5 轻量与高精度检测/识别模型之间切换，模型按需联网下载；
+- 模型常驻 Python sidecar，同一档位的连续任务不重复初始化；
+- 支持在当前页结束后暂停、继续或取消队列，并提供无响应时强制停止；
 - 识别阶段临时阻断 Python socket 连接；
 - 逐页返回文字、置信度、文本框坐标和纯文本；
-- 在界面中校对并复制结果；
+- 每个文件独立保留结果，可校对、复制并批量导出同名 TXT；
+- Windows 发布版隐藏 sidecar 控制台窗口，同时保留管道通信；
 - NDJSON 标准输入/输出通信，不启动本地 HTTP 端口。
+
+当前结果类型预留了 `text`、`table` 和 `document`，但 0.3.0 只实现普通文字 OCR；图片表格不会恢复为行列和合并单元格结构。
 
 ## 隐私边界
 
-`prepare` 阶段允许 PaddleOCR 下载官方模型。`recognize` 阶段只向 sidecar 传递本地路径，并使用 `block_python_network()` 阻止 Python 网络连接。项目不包含文档上传、云端 OCR、遥测或崩溃报告代码。
+`prepare` 阶段允许 PaddleOCR 下载所选档位的官方模型。`recognize` 阶段只向 sidecar 传递本地路径，并使用 `block_python_network()` 阻止 Python 网络连接。暂停期间仍处于同一次本地识别任务中。项目不包含文档上传、云端 OCR、遥测或崩溃报告代码。
 
 这个 Python 网络守卫不是操作系统级沙箱。若用于需要形式化合规保证的环境，下一步应把模型下载器拆为独立进程，并在操作系统层限制 OCR worker 的网络权限。
 
@@ -102,13 +106,13 @@ npm run tauri build
 工作流也会在推送 `v*` 标签时自动运行，例如：
 
 ```bash
-git tag v0.2.8
-git push origin v0.2.8
+git tag v0.3.0
+git push origin v0.3.0
 ```
 
 构建产物作为 Actions Artifact 保存 14 天。当前产物没有代码签名，因此 Windows 首次运行可能显示 SmartScreen 警告。正式公开发布前还应修改 `src-tauri/tauri.conf.json` 中的 `com.example.localocr` 标识，并配置 Windows 代码签名。
 
-工作流对冻结后的 sidecar 和 PP-OCRv5 mobile 模型分别使用内容寻址缓存：源码和依赖未变化时会跳过 PaddleOCR/PyInstaller 的重复安装与冻结。当前最小发布组合为 Windows NSIS EXE 和 Linux AppImage；DEB、RPM 暂不构建，等最小组合稳定后再逐步恢复。单个平台总超时为 240 分钟，同时为依赖安装、sidecar 冻结、模型验证和 Tauri 打包设置了更短的分阶段超时，便于区分真正卡住的步骤。
+工作流对冻结后的 sidecar 和 PP-OCRv5 轻量/高精度模型分别使用内容寻址缓存：源码和依赖未变化时会跳过 PaddleOCR/PyInstaller 的重复安装与冻结。当前最小发布组合为 Windows NSIS EXE 和 Linux AppImage；DEB、RPM 暂不构建。单个平台总超时为 240 分钟，同时为依赖安装、sidecar 冻结、两档模型验证和 Tauri 打包设置了更短的分阶段超时。
 
 ### Actions 中执行的验证
 
@@ -119,9 +123,9 @@ git push origin v0.2.8
 3. 执行 `paddle.utils.run_check()`；
 4. 使用 PyInstaller 冻结 sidecar；
 5. 启动冻结后的 sidecar；
-6. 下载并载入 PP-OCRv5 mobile 模型；
+6. 依次下载并载入 PP-OCRv5 轻量和高精度模型；
 7. 按文件名加载 Paddle MKL 原生运行库，确认冻结包的动态库搜索路径有效；
-8. 生成一张本地测试 PNG，并让冻结后的 sidecar 完整执行一次 `recognize` 推理；
+8. 生成一张本地测试 PNG，并让冻结后的 sidecar 用两个模型档位各执行一次 `recognize` 推理；
 9. 确认 NDJSON 的 `ping`、`prepare`、`recognize` 和 `shutdown` 均正常返回；
 10. 最后才执行 Tauri 安装包构建。
 
@@ -131,7 +135,7 @@ git push origin v0.2.8
 
 PaddleX 会在创建 OCR pipeline 前通过 `importlib.metadata` 检查 `ocr-core` 依赖。仅把 Python 模块交给 PyInstaller 还不够，冻结后的 sidecar 也必须包含这些包的 `.dist-info` 元数据。本项目已显式锁定 `paddlex[ocr-core]`，并由 `scripts/build-sidecar.py` 复制 PaddleX、OpenCV、PyPDFium2、Shapely 等 OCR 依赖的分发元数据；不要删掉这些 `--copy-metadata` 参数。
 
-Paddle 的 CPU predictor 还会在运行时按文件名动态载入 MKL。`--collect-all paddle` 会保留 `paddle/libs` 中的原文件，但单文件应用的系统动态库搜索路径只包含解压目录顶层，因此构建脚本还会把 `mklml.dll` 及其 `libiomp5md.dll` 依赖（Windows），或 `libmklml_intel.so`（Linux）加入顶层。烟雾测试使用 UTF-8 原始字节输出 stderr，避免 Windows runner 的 CP1252 控制台掩盖真实错误。
+Paddle 的 CPU predictor 还会在运行时按文件名动态载入 MKL。`--collect-all paddle` 会保留 `paddle/libs` 中的原文件，但单文件应用的系统动态库搜索路径只包含解压目录顶层，因此构建脚本还会把 `mklml.dll` 及其 `libiomp5md.dll` 依赖（Windows），或 `libmklml_intel.so`（Linux）加入顶层。Windows 使用 PyInstaller `--hide-console hide-early` 隐藏 sidecar 自己创建的控制台，但仍保留 console bootloader 和标准管道；不要改成 `--noconsole`。烟雾测试使用 UTF-8 原始字节输出 stderr，避免 Windows runner 的 CP1252 控制台掩盖真实错误。
 
 当前固定使用 `paddlepaddle==3.2.2`。PaddlePaddle 3.3.x 的 CPU oneDNN/PIR 路径存在已知回归，PP-OCRv5 在第一次实际推理时可能报 `ConvertPirAttribute2RuntimeAttribute`；仅初始化模型无法发现该问题，因此不要在没有完成真实推理烟雾测试的情况下升级 PaddlePaddle。
 
@@ -151,8 +155,11 @@ python sidecar/main.py
 
 ```json
 {"id":"1","method":"ping","params":{}}
-{"id":"2","method":"prepare","params":{}}
+{"id":"2","method":"prepare","params":{"profile":"fast"}}
 {"id":"3","method":"recognize","params":{"path":"/absolute/path/to/image.png","scoreThreshold":0.5}}
+{"id":"4","method":"pause","params":{}}
+{"id":"5","method":"resume","params":{}}
+{"id":"6","method":"cancel","params":{}}
 ```
 
 运行不需要 PaddleOCR 的结构测试：
@@ -176,9 +183,9 @@ scripts/smoke-sidecar.py     冻结后 sidecar 与模型载入检查
 
 ## 下一阶段建议
 
-1. 增加多文件任务队列和取消任务；
+1. 增加实验性表格识别结果和 HTML/XLSX 导出；
 2. 在图片上叠加 `polygon` 文本框并联动文字块；
-3. 增加 TXT、JSON、Markdown 导出；
+3. 增加 JSON、Markdown 导出和关闭程序后的队列恢复；
 4. 将模型下载器拆成独立、可联网的 sidecar；
 5. 增加自定义模型目录与模型版本清单；
 6. 在现有 Windows/Linux 流水线上增加 GitHub Release 发布，并另行验证 macOS arm64；

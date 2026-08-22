@@ -15,7 +15,7 @@ interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (reason: Error) => void;
   onEvent?: (event: SidecarEvent) => void;
-  timer: ReturnType<typeof setTimeout>;
+  timer: ReturnType<typeof setTimeout> | null;
 }
 
 class OcrSidecarClient {
@@ -83,17 +83,25 @@ class OcrSidecarClient {
     }
   }
 
+  async forceStop(): Promise<void> {
+    const child = this.child;
+    if (!child) return;
+    this.child = null;
+    this.failAll(new Error("OCR sidecar 已被强制停止"));
+    await child.kill();
+  }
+
   async request<T>(
     method: string,
     params: Record<string, unknown> = {},
     onEvent?: (event: SidecarEvent) => void,
-    timeoutMs = 15 * 60_000
+    timeoutMs: number | null = 15 * 60_000
   ): Promise<T> {
     if (!this.child) throw new Error("OCR sidecar 尚未启动");
 
     const id = crypto.randomUUID();
     const promise = new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const timer = timeoutMs === null ? null : setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`${method} 请求超时`));
       }, timeoutMs);
@@ -109,7 +117,7 @@ class OcrSidecarClient {
       await this.child.write(`${JSON.stringify({ id, method, params })}\n`);
     } catch (error) {
       const item = this.pending.get(id);
-      if (item) clearTimeout(item.timer);
+      if (item?.timer) clearTimeout(item.timer);
       this.pending.delete(id);
       throw error;
     }
@@ -154,7 +162,7 @@ class OcrSidecarClient {
       return;
     }
 
-    clearTimeout(request.timer);
+    if (request.timer) clearTimeout(request.timer);
     this.pending.delete(message.id);
     if (message.type === "error") {
       request.reject(new Error(message.message ?? "OCR sidecar 返回错误"));
@@ -165,7 +173,7 @@ class OcrSidecarClient {
 
   private failAll(error: Error): void {
     for (const request of this.pending.values()) {
-      clearTimeout(request.timer);
+      if (request.timer) clearTimeout(request.timer);
       request.reject(error);
     }
     this.pending.clear();

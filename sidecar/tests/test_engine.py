@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 SIDECAR_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SIDECAR_DIR))
 
-from engine import extract_page  # noqa: E402
+from engine import MODEL_PROFILES, export_text_results, extract_page  # noqa: E402
 from network_guard import NetworkBlockedError, block_python_network  # noqa: E402
 
 
@@ -47,7 +48,25 @@ class EngineSchemaTests(unittest.TestCase):
             with self.assertRaises(NetworkBlockedError):
                 socket.create_connection(("example.com", 80))
 
+    def test_model_profiles_use_mobile_and_server_pairs(self) -> None:
+        self.assertEqual(MODEL_PROFILES["fast"]["detection"], "PP-OCRv5_mobile_det")
+        self.assertEqual(MODEL_PROFILES["accurate"]["recognition"], "PP-OCRv5_server_rec")
+
+    def test_export_text_results_avoids_name_collisions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            first = Path(temp_dir) / "报告.txt"
+            first.write_text("existing", encoding="utf-8")
+            result = export_text_results(
+                temp_dir,
+                [
+                    {"fileName": "报告.pdf", "text": "第一份"},
+                    {"fileName": "报告.png", "text": "第二份"},
+                ],
+            )
+            exported = [Path(item["path"]) for item in result["files"]]
+            self.assertEqual([path.name for path in exported], ["报告 (2).txt", "报告 (3).txt"])
+            self.assertEqual(exported[0].read_text(encoding="utf-8"), "第一份")
+
 
 if __name__ == "__main__":
     unittest.main()
-

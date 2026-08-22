@@ -37,6 +37,19 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertIsNotNone(match)
         self.assertEqual(match.group(1), external_bins[0])
 
+    def test_windows_sidecar_hides_console_without_disabling_stdio(self) -> None:
+        build_script = (ROOT / "scripts" / "build-sidecar.py").read_text(encoding="utf-8")
+        self.assertIn('command.extend(["--hide-console", "hide-early"])', build_script)
+        self.assertNotIn('"--noconsole"', build_script)
+
+    def test_frontend_and_protocol_reserve_batch_result_types(self) -> None:
+        app = (ROOT / "src" / "App.vue").read_text(encoding="utf-8")
+        types = (ROOT / "src" / "lib" / "types.ts").read_text(encoding="utf-8")
+        self.assertIn("multiple: true", app)
+        self.assertIn('"text" | "table" | "document"', types)
+        self.assertIn('ocrSidecar.request("pause"', app)
+        self.assertIn('ocrSidecar.request("cancel"', app)
+
 
 if __name__ == "__main__":
     unittest.main()

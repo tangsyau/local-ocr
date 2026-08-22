@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import contextlib
 import ctypes
+import gc
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -11,8 +13,20 @@ from typing import Any, Callable
 from network_guard import block_python_network
 
 
-ProgressCallback = Callable[[str, int | None], None]
+ProgressCallback = Callable[[str, int | None, str], None]
 SUPPORTED_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".pdf"}
+MODEL_PROFILES = {
+    "fast": {
+        "label": "PP-OCRv5 轻量",
+        "detection": "PP-OCRv5_mobile_det",
+        "recognition": "PP-OCRv5_mobile_rec",
+    },
+    "accurate": {
+        "label": "PP-OCRv5 高精度",
+        "detection": "PP-OCRv5_server_det",
+        "recognition": "PP-OCRv5_server_rec",
+    },
+}
 
 
 def _jsonable(value: Any) -> Any:
@@ -61,11 +75,18 @@ def extract_page(result: Any) -> dict[str, Any]:
 class OcrEngine:
     def __init__(self) -> None:
         self._ocr: Any | None = None
+        self._profile: str | None = None
         self._native_runtime: Any | None = None
+        self._pause_requested = threading.Event()
+        self._cancel_requested = threading.Event()
 
     @property
     def ready(self) -> bool:
         return self._ocr is not None
+
+    @property
+    def profile(self) -> str | None:
+        return self._profile
 
     def check_native_runtime(self) -> dict[str, Any]:
         """Verify that Paddle's lazily loaded CPU runtime is discoverable."""
@@ -85,30 +106,63 @@ class OcrEngine:
             self._native_runtime = loader(library_name)
         return {"ok": True, "library": library_name}
 
-    def prepare(self, progress: ProgressCallback | None = None) -> dict[str, Any]:
-        if self._ocr is not None:
-            return {"ready": True, "downloaded": False, "model": "PP-OCRv5 mobile"}
+    def prepare(self, profile: str = "fast", progress: ProgressCallback | None = None) -> dict[str, Any]:
+        if profile not in MODEL_PROFILES:
+            raise ValueError(f"未知模型档位：{profile}")
+        model = MODEL_PROFILES[profile]
+        if self._ocr is not None and self._profile == profile:
+            return {"ready": True, "downloaded": False, "model": model["label"], "profile": profile}
 
         if progress:
-            progress("正在检查并下载 PP-OCRv5 轻量模型……", None)
+            progress(f"正在检查并下载{model['label']}模型……", None, "status")
+
+        if self._ocr is not None:
+            self._ocr = None
+            self._profile = None
+            gc.collect()
 
         # PaddleOCR may emit progress information. Keep stdout reserved for NDJSON.
         with contextlib.redirect_stdout(sys.stderr):
             from paddleocr import PaddleOCR
 
             self._ocr = PaddleOCR(
-                text_detection_model_name="PP-OCRv5_mobile_det",
-                text_recognition_model_name="PP-OCRv5_mobile_rec",
+                text_detection_model_name=model["detection"],
+                text_recognition_model_name=model["recognition"],
                 use_doc_orientation_classify=False,
                 use_doc_unwarping=False,
                 use_textline_orientation=False,
                 device="cpu",
                 cpu_threads=max(1, min(os.cpu_count() or 4, 8)),
             )
+            self._profile = profile
 
         if progress:
-            progress("模型已下载并载入本机内存", None)
-        return {"ready": True, "downloaded": True, "model": "PP-OCRv5 mobile"}
+            progress(f"{model['label']}模型已下载并载入本机内存", None, "status")
+        return {"ready": True, "downloaded": True, "model": model["label"], "profile": profile}
+
+    def reset_job_control(self) -> None:
+        self._pause_requested.clear()
+        self._cancel_requested.clear()
+
+    def pause(self) -> None:
+        self._pause_requested.set()
+
+    def resume(self) -> None:
+        self._pause_requested.clear()
+
+    def cancel(self) -> None:
+        self._cancel_requested.set()
+        self._pause_requested.clear()
+
+    def _wait_if_paused(self, page: int, progress: ProgressCallback | None) -> None:
+        if not self._pause_requested.is_set() or self._cancel_requested.is_set():
+            return
+        if progress:
+            progress("识别已暂停；已完成的结果会保留", page, "paused")
+        while self._pause_requested.is_set() and not self._cancel_requested.wait(0.1):
+            pass
+        if progress and not self._cancel_requested.is_set():
+            progress("继续本地识别……", page, "resumed")
 
     def recognize(
         self,
@@ -129,7 +183,7 @@ class OcrEngine:
         started = time.perf_counter()
         pages: list[dict[str, Any]] = []
         if progress:
-            progress("已封锁 Python 网络连接，开始读取本地文档……", None)
+            progress("已封锁 Python 网络连接，开始读取本地文档……", None, "status")
 
         with block_python_network(), contextlib.redirect_stdout(sys.stderr):
             results = self._ocr.predict_iter(
@@ -139,14 +193,43 @@ class OcrEngine:
             for page_number, result in enumerate(results, start=1):
                 pages.append(extract_page(result))
                 if progress:
-                    progress(f"已完成第 {page_number} 页", page_number)
+                    progress(f"已完成第 {page_number} 页", page_number, "progress")
+                if self._cancel_requested.is_set():
+                    break
+                self._wait_if_paused(page_number, progress)
+                if self._cancel_requested.is_set():
+                    break
 
         elapsed_ms = round((time.perf_counter() - started) * 1000)
         return {
             "path": str(path),
+            "profile": self._profile,
+            "resultType": "text",
+            "cancelled": self._cancel_requested.is_set(),
             "text": "\n\n".join(page["text"] for page in pages if page["text"]),
             "pageCount": len(pages),
             "blockCount": sum(len(page["blocks"]) for page in pages),
             "elapsedMs": elapsed_ms,
             "pages": pages,
         }
+
+
+def export_text_results(directory_value: str, items: list[dict[str, Any]]) -> dict[str, Any]:
+    directory = Path(directory_value).expanduser().resolve(strict=True)
+    if not directory.is_dir():
+        raise ValueError("导出位置不是文件夹")
+
+    exported: list[dict[str, str]] = []
+    reserved: set[Path] = set()
+    for item in items:
+        source_name = Path(str(item.get("fileName") or "识别结果")).name
+        stem = Path(source_name).stem.strip() or "识别结果"
+        candidate = directory / f"{stem}.txt"
+        index = 2
+        while candidate.exists() or candidate in reserved:
+            candidate = directory / f"{stem} ({index}).txt"
+            index += 1
+        candidate.write_text(str(item.get("text") or ""), encoding="utf-8")
+        reserved.add(candidate)
+        exported.append({"source": source_name, "path": str(candidate)})
+    return {"count": len(exported), "files": exported}
