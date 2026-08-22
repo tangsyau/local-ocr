@@ -12,7 +12,7 @@ button, input, textarea { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .55; }
 
-.app-shell { min-height: 100vh; display: grid; grid-template-rows: auto 1fr auto; }
+.app-shell { height: 100vh; min-height: 0; overflow: hidden; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
 .topbar { height: 96px; padding: 19px 28px 15px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #d8dcd5; background: rgba(247,248,244,.88); }
 .eyebrow { margin: 0 0 2px; color: #748078; font-size: 10px; font-weight: 700; letter-spacing: .22em; }
 h1 { margin: 0; font-size: 28px; letter-spacing: -.04em; }
@@ -66,6 +66,10 @@ h1 { margin: 0; font-size: 28px; letter-spacing: -.04em; }
 .task-item.failed .task-status { color: #943f38; background: #fbe4e1; }
 .task-item.cancelled .task-status { color: #6f7470; background: #ececeb; }
 .task-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 3px; }
+.task-progress { grid-column: 1 / -1; width: 100%; height: 5px; border: 0; border-radius: 999px; overflow: hidden; accent-color: #4d825e; }
+.task-progress::-webkit-progress-bar { background: #e6eae5; }
+.task-progress::-webkit-progress-value { background: #4d825e; }
+.task-progress::-moz-progress-bar { background: #4d825e; }
 .control-grid { margin-top: 14px; display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
 .control-grid .secondary-button, .control-grid .primary-button { margin: 0; }
 .primary-button.compact { padding: 9px; }
@@ -107,4 +111,10 @@ textarea { width: 100%; height: 100%; min-height: 330px; resize: none; padding: 
 @media (max-width: 1100px) {
   .content-grid { grid-template-columns: 1fr; overflow: auto; }
   .panel { min-height: 520px; }
+}
+
+@media (max-height: 760px) {
+  .topbar { height: 78px; padding-block: 12px; }
+  .sidebar { padding-block: 14px; }
+  .content-grid { padding-block: 14px; }
 }

@@ -9,6 +9,7 @@ interface ProtocolMessage {
   result?: unknown;
   details?: string;
   page?: number;
+  pageCount?: number;
 }
 
 interface PendingRequest {
@@ -157,7 +158,8 @@ class OcrSidecarClient {
       request.onEvent?.({
         event: message.event ?? "status",
         message: message.message,
-        page: message.page
+        page: message.page,
+        pageCount: message.pageCount
       });
       return;
     }

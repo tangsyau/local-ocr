@@ -8,13 +8,15 @@
 - 在 PP-OCRv5 轻量与高精度检测/识别模型之间切换，模型按需联网下载；
 - 模型常驻 Python sidecar，同一档位的连续任务不重复初始化；
 - 支持在当前页结束后暂停、继续或取消队列，并提供无响应时强制停止；
+- PDF 在识别前读取总页数，任务列表显示当前页、总页数和百分比；
 - 识别阶段临时阻断 Python socket 连接；
 - 逐页返回文字、置信度、文本框坐标和纯文本；
 - 每个文件独立保留结果，可校对、复制并批量导出同名 TXT；
-- Windows 发布版隐藏 sidecar 控制台窗口，同时保留管道通信；
+- Windows 发布版将 Tauri 主程序设为 GUI 子系统，并隐藏 sidecar 控制台，同时保留管道通信；
+- Windows 和 Linux 启动时默认最大化；较小屏幕仍可滚动和手动调整窗口；
 - NDJSON 标准输入/输出通信，不启动本地 HTTP 端口。
 
-当前结果类型预留了 `text`、`table` 和 `document`，但 0.3.0 只实现普通文字 OCR；图片表格不会恢复为行列和合并单元格结构。
+当前结果类型预留了 `text`、`table` 和 `document`，但 0.3.1 只实现普通文字 OCR；图片表格不会恢复为行列和合并单元格结构。
 
 ## 隐私边界
 
@@ -106,8 +108,8 @@ npm run tauri build
 工作流也会在推送 `v*` 标签时自动运行，例如：
 
 ```bash
-git tag v0.3.0
-git push origin v0.3.0
+git tag v0.3.1
+git push origin v0.3.1
 ```
 
 构建产物作为 Actions Artifact 保存 14 天。当前产物没有代码签名，因此 Windows 首次运行可能显示 SmartScreen 警告。正式公开发布前还应修改 `src-tauri/tauri.conf.json` 中的 `com.example.localocr` 标识，并配置 Windows 代码签名。

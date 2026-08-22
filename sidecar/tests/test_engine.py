@@ -4,11 +4,13 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 SIDECAR_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SIDECAR_DIR))
 
-from engine import MODEL_PROFILES, export_text_results, extract_page  # noqa: E402
+from engine import MODEL_PROFILES, document_page_count, export_text_results, extract_page  # noqa: E402
 from network_guard import NetworkBlockedError, block_python_network  # noqa: E402
 
 
@@ -66,6 +68,24 @@ class EngineSchemaTests(unittest.TestCase):
             exported = [Path(item["path"]) for item in result["files"]]
             self.assertEqual([path.name for path in exported], ["报告 (2).txt", "报告 (3).txt"])
             self.assertEqual(exported[0].read_text(encoding="utf-8"), "第一份")
+
+    def test_pdf_page_count_uses_pdfium_and_closes_document(self) -> None:
+        closed = False
+
+        class FakeDocument:
+            def __init__(self, path: str) -> None:
+                self.path = path
+
+            def __len__(self) -> int:
+                return 12
+
+            def close(self) -> None:
+                nonlocal closed
+                closed = True
+
+        with patch.dict(sys.modules, {"pypdfium2": SimpleNamespace(PdfDocument=FakeDocument)}):
+            self.assertEqual(document_page_count(Path("example.pdf")), 12)
+        self.assertTrue(closed)
 
 
 if __name__ == "__main__":

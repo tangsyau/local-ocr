@@ -103,6 +103,7 @@ function retryTask(task: OcrTask): void {
   task.status = "queued";
   task.error = undefined;
   task.currentPage = undefined;
+  task.totalPages = undefined;
   task.result = undefined;
   status.value = `${task.fileName} 已重新加入队列`;
 }
@@ -156,6 +157,7 @@ function updateGlobalStatus(event: SidecarEvent): void {
 
 function updateTaskStatus(task: OcrTask, event: SidecarEvent): void {
   if (event.page !== undefined) task.currentPage = event.page;
+  if (event.pageCount !== undefined) task.totalPages = event.pageCount;
   if (event.event === "paused") {
     task.status = "paused";
     phase.value = "paused";
@@ -193,6 +195,7 @@ async function runQueue(): Promise<void> {
         );
         task.result = result;
         task.currentPage = result.pageCount;
+        task.totalPages = result.totalPageCount;
         task.status = result.cancelled ? "cancelled" : "completed";
       } catch (error) {
         task.status = stopRequested.value ? "cancelled" : "failed";
@@ -354,12 +357,16 @@ function showError(error: unknown): void {
           <div v-if="tasks.length" class="queue-toolbar"><span>{{ queuedCount }} 个等待</span><button :disabled="queueRunning" @click="clearFinished">清理已结束</button></div>
           <div v-if="tasks.length" class="task-list">
             <div v-for="task in tasks" :key="task.id" :class="['task-item', task.status, { selected: task.id === selectedTaskId }]" role="button" tabindex="0" @click="selectedTaskId = task.id" @keydown.enter="selectedTaskId = task.id">
-              <div class="task-main"><span class="task-name" :title="task.path">{{ task.fileName }}</span><small v-if="task.currentPage">第 {{ task.currentPage }} 页</small></div>
+              <div class="task-main">
+                <span class="task-name" :title="task.path">{{ task.fileName }}</span>
+                <small v-if="task.totalPages">第 {{ task.currentPage ?? 0 }} / {{ task.totalPages }} 页<span v-if="task.status === 'running' || task.status === 'paused'"> · {{ Math.round(((task.currentPage ?? 0) / task.totalPages) * 100) }}%</span></small>
+              </div>
               <span class="task-status">{{ statusLabels[task.status] }}</span>
               <div class="task-actions">
                 <button v-if="task.status === 'failed' || task.status === 'cancelled'" @click.stop="retryTask(task)">重试</button>
                 <button v-if="task.status !== 'running' && task.status !== 'paused'" @click.stop="removeTask(task)">移除</button>
               </div>
+              <progress v-if="task.totalPages && (task.status === 'running' || task.status === 'paused')" class="task-progress" :value="task.currentPage ?? 0" :max="task.totalPages"></progress>
             </div>
           </div>
           <p v-else class="queue-empty">可以一次选择多个文件，程序会顺序识别。</p>
@@ -393,7 +400,7 @@ function showError(error: unknown): void {
           <div class="panel-title"><span>识别结果</span><button class="text-button" :disabled="!selectedResult?.text" @click="copyText">复制全文</button></div>
           <div v-if="selectedResult" class="result-body">
             <div class="metrics">
-              <div><b>{{ selectedResult.pageCount }}</b><span>页数</span></div>
+              <div><b>{{ selectedResult.pageCount }} / {{ selectedResult.totalPageCount }}</b><span>已完成 / 总页数</span></div>
               <div><b>{{ selectedResult.blockCount }}</b><span>文本块</span></div>
               <div><b>{{ averageScore === null ? "—" : `${(averageScore * 100).toFixed(1)}%` }}</b><span>平均置信度</span></div>
               <div><b>{{ (selectedResult.elapsedMs / 1000).toFixed(2) }}s</b><span>用时</span></div>

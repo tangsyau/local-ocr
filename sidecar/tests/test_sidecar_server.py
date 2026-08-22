@@ -30,6 +30,7 @@ class FakeEngine:
 
     def recognize(self, path: str, score: float, progress: Any) -> dict[str, Any]:
         self.started.set()
+        progress("已完成第 1/3 页（33%）", 1, "progress", 3)
         self.release.wait(timeout=2)
         return {
             "path": path,
@@ -38,6 +39,7 @@ class FakeEngine:
             "cancelled": self.cancel_called,
             "text": "ok",
             "pageCount": 1,
+            "totalPageCount": 1,
             "blockCount": 1,
             "elapsedMs": 1,
             "pages": [],
@@ -76,9 +78,16 @@ class SidecarServerTests(unittest.TestCase):
             while server.active and time.monotonic() < deadline:
                 time.sleep(0.01)
 
-        result = next(message for message in messages if message.get("id") == "recognize")
+        result = next(
+            message
+            for message in messages
+            if message.get("id") == "recognize" and message.get("type") == "result"
+        )
+        progress = next(message for message in messages if message.get("event") == "progress")
         self.assertEqual(result["type"], "result")
         self.assertTrue(result["result"]["cancelled"])
+        self.assertEqual(progress["page"], 1)
+        self.assertEqual(progress["pageCount"], 3)
 
 
 if __name__ == "__main__":

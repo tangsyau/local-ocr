@@ -28,7 +28,14 @@ class SidecarServer:
         with self._worker_lock:
             return self._worker is not None and self._worker.is_alive()
 
-    def _progress(self, request_id: str, message: str, page: int | None, event: str) -> None:
+    def _progress(
+        self,
+        request_id: str,
+        message: str,
+        page: int | None,
+        event: str,
+        page_count: int | None,
+    ) -> None:
         payload: dict[str, Any] = {
             "id": request_id,
             "type": "event",
@@ -37,6 +44,8 @@ class SidecarServer:
         }
         if page is not None:
             payload["page"] = page
+        if page_count is not None:
+            payload["pageCount"] = page_count
         emit(payload)
 
     def start_recognition(self, request_id: str, params: dict[str, Any]) -> None:
@@ -59,7 +68,9 @@ class SidecarServer:
             result = self.engine.recognize(
                 str(params.get("path") or ""),
                 float(params.get("scoreThreshold", 0.5)),
-                lambda message, page, event: self._progress(request_id, message, page, event),
+                lambda message, page, event, page_count: self._progress(
+                    request_id, message, page, event, page_count
+                ),
             )
             response = {"id": request_id, "type": "result", "result": result}
         except Exception as error:
@@ -87,8 +98,13 @@ class SidecarServer:
         method = request.get("method")
         params = request.get("params") or {}
 
-        def progress(message: str, page: int | None = None, event: str = "status") -> None:
-            self._progress(request_id, message, page, event)
+        def progress(
+            message: str,
+            page: int | None = None,
+            event: str = "status",
+            page_count: int | None = None,
+        ) -> None:
+            self._progress(request_id, message, page, event, page_count)
 
         if method == "ping":
             result: Any = {

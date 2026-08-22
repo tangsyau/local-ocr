@@ -18,6 +18,7 @@ export interface OcrResult {
   cancelled: boolean;
   text: string;
   pageCount: number;
+  totalPageCount: number;
   blockCount: number;
   elapsedMs: number;
   pages: OcrPage[];
@@ -27,6 +28,7 @@ export interface SidecarEvent {
   event: string;
   message?: string;
   page?: number;
+  pageCount?: number;
 }
 
 export type ModelProfile = "fast" | "accurate";
@@ -45,6 +47,7 @@ export interface OcrTask {
   fileName: string;
   status: OcrTaskStatus;
   currentPage?: number;
+  totalPages?: number;
   result?: OcrResult;
   error?: string;
   resultType: "text";

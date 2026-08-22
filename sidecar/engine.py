@@ -13,7 +13,7 @@ from typing import Any, Callable
 from network_guard import block_python_network
 
 
-ProgressCallback = Callable[[str, int | None, str], None]
+ProgressCallback = Callable[[str, int | None, str, int | None], None]
 SUPPORTED_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".pdf"}
 MODEL_PROFILES = {
     "fast": {
@@ -72,6 +72,18 @@ def extract_page(result: Any) -> dict[str, Any]:
     }
 
 
+def document_page_count(path: Path) -> int:
+    if path.suffix.lower() != ".pdf":
+        return 1
+    from pypdfium2 import PdfDocument
+
+    document = PdfDocument(str(path))
+    try:
+        return len(document)
+    finally:
+        document.close()
+
+
 class OcrEngine:
     def __init__(self) -> None:
         self._ocr: Any | None = None
@@ -114,7 +126,7 @@ class OcrEngine:
             return {"ready": True, "downloaded": False, "model": model["label"], "profile": profile}
 
         if progress:
-            progress(f"正在检查并下载{model['label']}模型……", None, "status")
+            progress(f"正在检查并下载{model['label']}模型……", None, "status", None)
 
         if self._ocr is not None:
             self._ocr = None
@@ -137,7 +149,7 @@ class OcrEngine:
             self._profile = profile
 
         if progress:
-            progress(f"{model['label']}模型已下载并载入本机内存", None, "status")
+            progress(f"{model['label']}模型已下载并载入本机内存", None, "status", None)
         return {"ready": True, "downloaded": True, "model": model["label"], "profile": profile}
 
     def reset_job_control(self) -> None:
@@ -154,15 +166,15 @@ class OcrEngine:
         self._cancel_requested.set()
         self._pause_requested.clear()
 
-    def _wait_if_paused(self, page: int, progress: ProgressCallback | None) -> None:
+    def _wait_if_paused(self, page: int, page_count: int, progress: ProgressCallback | None) -> None:
         if not self._pause_requested.is_set() or self._cancel_requested.is_set():
             return
         if progress:
-            progress("识别已暂停；已完成的结果会保留", page, "paused")
+            progress(f"识别已暂停（第 {page}/{page_count} 页）；已完成的结果会保留", page, "paused", page_count)
         while self._pause_requested.is_set() and not self._cancel_requested.wait(0.1):
             pass
         if progress and not self._cancel_requested.is_set():
-            progress("继续本地识别……", page, "resumed")
+            progress(f"继续本地识别，第 {page + 1}/{page_count} 页……", page, "resumed", page_count)
 
     def recognize(
         self,
@@ -182,8 +194,13 @@ class OcrEngine:
 
         started = time.perf_counter()
         pages: list[dict[str, Any]] = []
+        total_page_count = document_page_count(path)
         if progress:
-            progress("已封锁 Python 网络连接，开始读取本地文档……", None, "status")
+            if path.suffix.lower() == ".pdf":
+                message = f"已读取 PDF，共 {total_page_count} 页；已封锁 Python 网络连接，开始识别……"
+            else:
+                message = "已封锁 Python 网络连接，开始读取本地图片……"
+            progress(message, 0, "status", total_page_count)
 
         with block_python_network(), contextlib.redirect_stdout(sys.stderr):
             results = self._ocr.predict_iter(
@@ -193,10 +210,16 @@ class OcrEngine:
             for page_number, result in enumerate(results, start=1):
                 pages.append(extract_page(result))
                 if progress:
-                    progress(f"已完成第 {page_number} 页", page_number, "progress")
+                    percent = round(page_number / total_page_count * 100)
+                    progress(
+                        f"已完成第 {page_number}/{total_page_count} 页（{percent}%）",
+                        page_number,
+                        "progress",
+                        total_page_count,
+                    )
                 if self._cancel_requested.is_set():
                     break
-                self._wait_if_paused(page_number, progress)
+                self._wait_if_paused(page_number, total_page_count, progress)
                 if self._cancel_requested.is_set():
                     break
 
@@ -208,6 +231,7 @@ class OcrEngine:
             "cancelled": self._cancel_requested.is_set(),
             "text": "\n\n".join(page["text"] for page in pages if page["text"]),
             "pageCount": len(pages),
+            "totalPageCount": total_page_count,
             "blockCount": sum(len(page["blocks"]) for page in pages),
             "elapsedMs": elapsed_ms,
             "pages": pages,
