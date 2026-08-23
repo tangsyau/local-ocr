@@ -10,11 +10,16 @@ from engine import OcrEngine, export_text_results
 
 
 EMIT_LOCK = threading.Lock()
+PROTOCOL_STDOUT = sys.stdout
+
 
 def emit(message: dict[str, Any]) -> None:
+    # PaddleOCR writes diagnostics to stdout, so the worker temporarily redirects
+    # sys.stdout to stderr.  Keep the NDJSON pipe captured separately: progress
+    # events and control responses may be emitted while that redirect is active.
     with EMIT_LOCK:
-        sys.stdout.write(json.dumps(message, ensure_ascii=False, separators=(",", ":")) + "\n")
-        sys.stdout.flush()
+        PROTOCOL_STDOUT.write(json.dumps(message, ensure_ascii=False, separators=(",", ":")) + "\n")
+        PROTOCOL_STDOUT.flush()
 
 
 class SidecarServer:
@@ -147,9 +152,11 @@ class SidecarServer:
 
 
 def main() -> int:
+    global PROTOCOL_STDOUT
     for stream in (sys.stdin, sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
+    PROTOCOL_STDOUT = sys.stdout
 
     server = SidecarServer()
     emit({"id": None, "type": "event", "event": "ready", "message": "sidecar ready"})

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import contextlib
+import io
+import json
 import sys
 import threading
 import time
@@ -57,6 +60,26 @@ class FakeEngine:
 
 
 class SidecarServerTests(unittest.TestCase):
+    def test_protocol_output_bypasses_paddle_stdout_redirect(self) -> None:
+        protocol_output = io.StringIO()
+        paddle_output = io.StringIO()
+        message = {
+            "id": "pdf-progress",
+            "type": "event",
+            "event": "progress",
+            "page": 2,
+            "pageCount": 5,
+        }
+
+        with (
+            patch.object(sidecar_main, "PROTOCOL_STDOUT", protocol_output),
+            contextlib.redirect_stdout(paddle_output),
+        ):
+            sidecar_main.emit(message)
+
+        self.assertEqual(json.loads(protocol_output.getvalue()), message)
+        self.assertEqual(paddle_output.getvalue(), "")
+
     def test_control_commands_remain_responsive_during_recognition(self) -> None:
         server = sidecar_main.SidecarServer()
         fake = FakeEngine()

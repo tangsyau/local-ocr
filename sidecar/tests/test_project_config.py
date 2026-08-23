@@ -57,11 +57,16 @@ class ProjectConfigTests(unittest.TestCase):
     def test_frontend_and_protocol_reserve_batch_result_types(self) -> None:
         app = (ROOT / "src" / "App.vue").read_text(encoding="utf-8")
         types = (ROOT / "src" / "lib" / "types.ts").read_text(encoding="utf-8")
+        sidecar = (ROOT / "sidecar" / "main.py").read_text(encoding="utf-8")
+        smoke = (ROOT / "scripts" / "smoke-sidecar.py").read_text(encoding="utf-8")
         self.assertIn("multiple: true", app)
         self.assertIn('"text" | "table" | "document"', types)
         self.assertIn('ocrSidecar.request("pause"', app)
         self.assertIn('ocrSidecar.request("cancel"', app)
         self.assertIn("task.totalPages", app)
+        self.assertIn("正在处理第", app)
+        self.assertIn("PROTOCOL_STDOUT.write", sidecar)
+        self.assertIn("Sidecar did not emit OCR progress events", smoke)
 
 
 if __name__ == "__main__":

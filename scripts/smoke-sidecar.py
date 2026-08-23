@@ -132,6 +132,7 @@ def main() -> int:
         stderr_thread.start()
 
         results: dict[str, dict[str, Any]] = {}
+        events: dict[str, list[dict[str, Any]]] = {}
         for line in request_lines:
             request_id = str(json.loads(line)["id"])
             process.stdin.write(line + "\n")
@@ -149,10 +150,24 @@ def main() -> int:
                 except json.JSONDecodeError:
                     continue
                 message_id = message.get("id")
+                if message_id and message.get("type") == "event":
+                    events.setdefault(str(message_id), []).append(message)
                 if message_id and message.get("type") in {"result", "error"}:
                     results[str(message_id)] = message
             if results[request_id].get("type") == "error":
                 raise RuntimeError(f"Sidecar smoke test failed: {results[request_id]}")
+
+        if args.prepare:
+            for profile in profiles:
+                request_id = f"smoke-recognize-{profile}"
+                progress_events = [
+                    event for event in events.get(request_id, []) if event.get("event") == "progress"
+                ]
+                if not progress_events:
+                    raise RuntimeError(f"Sidecar did not emit OCR progress events: {request_id}")
+                final_progress = progress_events[-1]
+                if final_progress.get("page") != 1 or final_progress.get("pageCount") != 1:
+                    raise RuntimeError(f"Invalid OCR progress event: {final_progress}")
 
         process.stdin.close()
         return_code = process.wait(timeout=60)

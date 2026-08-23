@@ -359,7 +359,11 @@ function showError(error: unknown): void {
             <div v-for="task in tasks" :key="task.id" :class="['task-item', task.status, { selected: task.id === selectedTaskId }]" role="button" tabindex="0" @click="selectedTaskId = task.id" @keydown.enter="selectedTaskId = task.id">
               <div class="task-main">
                 <span class="task-name" :title="task.path">{{ task.fileName }}</span>
-                <small v-if="task.totalPages">第 {{ task.currentPage ?? 0 }} / {{ task.totalPages }} 页<span v-if="task.status === 'running' || task.status === 'paused'"> · {{ Math.round(((task.currentPage ?? 0) / task.totalPages) * 100) }}%</span></small>
+                <small v-if="task.totalPages">
+                  <template v-if="task.status === 'running'">正在处理第 {{ Math.min((task.currentPage ?? 0) + 1, task.totalPages) }}/{{ task.totalPages }} 页</template>
+                  <template v-else>已完成 {{ task.currentPage ?? 0 }}/{{ task.totalPages }} 页</template>
+                  <span v-if="task.status === 'running' || task.status === 'paused'"> · {{ Math.round(((task.currentPage ?? 0) / task.totalPages) * 100) }}%</span>
+                </small>
               </div>
               <span class="task-status">{{ statusLabels[task.status] }}</span>
               <div class="task-actions">
