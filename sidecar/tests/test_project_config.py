@@ -113,8 +113,13 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertIn("sidecar:smoke -- --prepare", legacy_job)
         self.assertNotIn("--all-profiles", legacy_job)
         self.assertNotIn("actions/setup-python", legacy_job)
-        self.assertIn("astral-sh/setup-uv@v9", legacy_job)
-        self.assertIn("uv python install 3.11.16", legacy_job)
+        self.assertIn(
+            "astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d",
+            legacy_job,
+        )
+        self.assertNotIn("astral-sh/setup-uv@v", legacy_job)
+        self.assertIn('version: "latest-known"', legacy_job)
+        self.assertIn("uv python install 3.11.15", legacy_job)
         self.assertIn(".venv/bin", legacy_job)
         self.assertIn("ocr-sidecar-webkit4-debian11-py311", legacy_job)
         self.assertIn("python -m pip --version", legacy_job)

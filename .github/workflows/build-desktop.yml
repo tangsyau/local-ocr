@@ -190,9 +190,9 @@ jobs:
           cache: npm
 
       - name: Set up portable Python toolchain
-        uses: astral-sh/setup-uv@v9
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
-          version: "0.12.5"
+          version: "latest-known"
           enable-cache: true
           cache-dependency-glob: |
             sidecar/requirements.txt
@@ -201,8 +201,8 @@ jobs:
       - name: Create Python 3.11 environment inside the container
         shell: bash
         run: |
-          uv python install 3.11.16
-          uv venv --python 3.11.16 --seed .venv
+          uv python install 3.11.15
+          uv venv --python 3.11.15 --seed .venv
           echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Verify container Python and glibc baseline
