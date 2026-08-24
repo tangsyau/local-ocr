@@ -153,11 +153,11 @@ jobs:
     name: Linux x64 WebKitGTK 4.0 Experimental
     runs-on: ubuntu-22.04
     container:
-      image: ubuntu:20.04
+      image: debian:bullseye-slim
     timeout-minutes: 240
 
     steps:
-      - name: Prepare Ubuntu 20.04 build container
+      - name: Prepare Debian 11 build container
         shell: bash
         run: |
           apt-get update
@@ -173,10 +173,12 @@ jobs:
             libssl-dev \
             libwebkit2gtk-4.0-dev \
             patchelf \
+            unzip \
             wget \
-            xdg-utils
-          DEBIAN_FRONTEND=noninteractive apt-get install -y libayatana-appindicator3-dev || \
-            DEBIAN_FRONTEND=noninteractive apt-get install -y libappindicator3-dev
+            xdg-utils \
+            xz-utils \
+            zstd
+          DEBIAN_FRONTEND=noninteractive apt-get install -y libayatana-appindicator3-dev
 
       - name: Check out source
         uses: actions/checkout@v7
@@ -187,16 +189,27 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Set up Python
-        uses: actions/setup-python@v7
+      - name: Set up portable Python toolchain
+        uses: astral-sh/setup-uv@v9
         with:
-          python-version: "3.11"
-          architecture: x64
+          version: "0.12.5"
+          enable-cache: true
+          cache-dependency-glob: |
+            sidecar/requirements.txt
+            sidecar/requirements-build.txt
 
-      - name: Verify container Python entry point
+      - name: Create Python 3.11 environment inside the container
+        shell: bash
+        run: |
+          uv python install 3.11.16
+          uv venv --python 3.11.16 --seed .venv
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Verify container Python and glibc baseline
         run: |
           python --version
           python -m pip --version
+          ldd --version | head -n 1
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -205,14 +218,14 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: "./compat/webkitgtk-4.0/src-tauri -> target"
-          key: webkitgtk-4.0
+          key: webkitgtk-4.0-debian11
 
       - name: Restore WebKitGTK 4.0 frozen OCR sidecar
         id: sidecar-webkit4-cache
         uses: actions/cache@v5
         with:
           path: src-tauri/binaries/ocr-sidecar-*
-          key: ocr-sidecar-webkit4-${{ runner.arch }}-${{ hashFiles('sidecar/**/*.py', 'sidecar/requirements*.txt', 'scripts/build-sidecar.py', 'scripts/platform_target.py') }}
+          key: ocr-sidecar-webkit4-debian11-py311-${{ runner.arch }}-${{ hashFiles('sidecar/**/*.py', 'sidecar/requirements*.txt', 'scripts/build-sidecar.py', 'scripts/platform_target.py') }}
 
       - name: Restore PaddleOCR models
         uses: actions/cache@v5
@@ -239,7 +252,7 @@ jobs:
           npm run build:webkit4
           npm run test:python
 
-      - name: Freeze Python sidecar on Ubuntu 20.04
+      - name: Freeze Python sidecar on Debian 11
         if: steps.sidecar-webkit4-cache.outputs.cache-hit != 'true'
         timeout-minutes: 45
         run: npm run sidecar:build

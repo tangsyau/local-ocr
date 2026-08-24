@@ -95,7 +95,7 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertIn("window.__TAURI__", bridge)
         self.assertIn("VITE_WEBKITGTK_4_0", bridge)
 
-    def test_webkitgtk_4_0_action_uses_minimum_ubuntu_appimage_build(self) -> None:
+    def test_webkitgtk_4_0_action_uses_old_glibc_appimage_build(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "build-desktop.yml").read_text(
             encoding="utf-8"
         )
@@ -104,7 +104,7 @@ class ProjectConfigTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("image: ubuntu:20.04", workflow)
+        self.assertIn("image: debian:bullseye-slim", workflow)
         self.assertIn("libwebkit2gtk-4.0-dev", workflow)
         self.assertIn("--bundles appimage", workflow)
         self.assertIn("local-ocr-linux-x64-webkitgtk-4.0", workflow)
@@ -112,6 +112,11 @@ class ProjectConfigTests(unittest.TestCase):
         legacy_job = workflow.split("build-linux-webkitgtk-4:", 1)[1]
         self.assertIn("sidecar:smoke -- --prepare", legacy_job)
         self.assertNotIn("--all-profiles", legacy_job)
+        self.assertNotIn("actions/setup-python", legacy_job)
+        self.assertIn("astral-sh/setup-uv@v9", legacy_job)
+        self.assertIn("uv python install 3.11.16", legacy_job)
+        self.assertIn(".venv/bin", legacy_job)
+        self.assertIn("ocr-sidecar-webkit4-debian11-py311", legacy_job)
         self.assertIn("python -m pip --version", legacy_job)
         self.assertNotIn("cache: pip", legacy_job)
         self.assertIn("VITE_WEBKITGTK_4_0=1", package["scripts"]["build:webkit4"])
