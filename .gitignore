@@ -1,5 +1,6 @@
 node_modules/
 dist/
+dist-webkit4/
 .venv/
 __pycache__/
 *.py[cod]
@@ -9,4 +10,6 @@ sidecar/dist/
 src-tauri/target/
 src-tauri/binaries/ocr-sidecar-*
 !src-tauri/binaries/.gitkeep
-
+compat/webkitgtk-4.0/src-tauri/target/
+compat/webkitgtk-4.0/src-tauri/binaries/ocr-sidecar-*
+!compat/webkitgtk-4.0/src-tauri/binaries/.gitkeep

@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { convertFileSrc } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
 import { ocrSidecar } from "./lib/sidecar";
+import { convertLocalFileSrc, createId, isWebkitGtk40Build, openLocalDialog } from "./lib/tauri-bridge";
 import type { ModelProfile, OcrResult, OcrTask, OcrTaskStatus, SidecarEvent } from "./lib/types";
 
 type AppPhase = "starting" | "idle" | "preparing" | "recognizing" | "paused" | "error";
@@ -25,7 +24,7 @@ const selectedPath = computed(() => selectedTask.value?.path ?? "");
 const fileName = computed(() => selectedTask.value?.fileName ?? "");
 const extension = computed(() => fileName.value.split(".").pop()?.toLowerCase() ?? "");
 const isPdf = computed(() => extension.value === "pdf");
-const previewUrl = computed(() => selectedPath.value && !isPdf.value ? convertFileSrc(selectedPath.value) : "");
+const previewUrl = computed(() => selectedPath.value && !isPdf.value ? convertLocalFileSrc(selectedPath.value) : "");
 const modelsReady = computed(() => preparedProfile.value === modelProfile.value);
 const setupBusy = computed(() => phase.value === "starting" || phase.value === "preparing");
 const queuedCount = computed(() => tasks.value.filter((task) => task.status === "queued").length);
@@ -55,7 +54,7 @@ onBeforeUnmount(() => {
 });
 
 async function chooseFiles(): Promise<void> {
-  const selected = await open({
+  const selected = await openLocalDialog({
     multiple: true,
     filters: [
       { name: "图片或 PDF", extensions: ["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff", "pdf"] }
@@ -70,7 +69,7 @@ async function chooseFiles(): Promise<void> {
     if (existing.has(path.toLowerCase())) continue;
     existing.add(path.toLowerCase());
     additions.push({
-      id: crypto.randomUUID(),
+      id: createId(),
       path,
       fileName: path.split(/[\\/]/).pop() ?? path,
       status: "queued",
@@ -286,7 +285,7 @@ async function forceStopQueue(): Promise<void> {
 
 async function exportAllText(): Promise<void> {
   if (!exportableTasks.value.length) return;
-  const directory = await open({ directory: true, multiple: false, title: "选择 TXT 导出文件夹" });
+  const directory = await openLocalDialog({ directory: true, multiple: false, title: "选择 TXT 导出文件夹" });
   if (typeof directory !== "string") return;
   if (!ocrSidecar.running && !(await startSidecar())) return;
   try {
@@ -326,6 +325,7 @@ function showError(error: unknown): void {
     <header class="topbar">
       <div><p class="eyebrow">LOCAL DOCUMENT TOOL</p><h1>本地 OCR</h1></div>
       <div class="header-actions">
+        <span v-if="isWebkitGtk40Build" class="compat-badge">WebKitGTK 4.0 兼容版</span>
         <span v-if="tasks.length" class="queue-summary">完成 {{ completedCount }} / {{ tasks.length }}</span>
         <div class="privacy-badge"><span></span>文档仅在本机处理</div>
       </div>

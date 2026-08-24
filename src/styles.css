@@ -29,6 +29,7 @@ h1 { margin: 0; font-size: 28px; letter-spacing: -.04em; }
 .step-card p.error-help { margin: 0 0 12px; padding: 9px 10px; border: 1px solid #edc8c3; border-radius: 8px; color: #8a3d37; background: #fff5f3; line-height: 1.5; }
 
 .header-actions { display: flex; align-items: center; gap: 12px; }
+.compat-badge { padding: 7px 10px; border: 1px solid #d4c79f; border-radius: 999px; color: #745f24; background: #fff9e7; font-size: 11px; font-weight: 700; }
 .queue-summary { padding: 7px 10px; border-radius: 999px; color: #526158; background: #e8ebe6; font-size: 11px; font-weight: 700; }
 .model-options { display: grid; gap: 7px; margin-bottom: 10px; }
 .model-options label { display: flex; align-items: flex-start; gap: 9px; padding: 9px 10px; border: 1px solid #d8ddd7; border-radius: 9px; background: #fff; cursor: pointer; }

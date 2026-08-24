@@ -33,7 +33,7 @@ class ProjectConfigTests(unittest.TestCase):
             [{"name": external_bins[0], "sidecar": True}],
         )
 
-        match = re.search(r'Command\.sidecar\("([^"]+)"\)', frontend)
+        match = re.search(r'createSidecarCommand\("([^"]+)"\)', frontend)
         self.assertIsNotNone(match)
         self.assertEqual(match.group(1), external_bins[0])
 
@@ -67,6 +67,53 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertIn("正在处理第", app)
         self.assertIn("PROTOCOL_STDOUT.write", sidecar)
         self.assertIn("Sidecar did not emit OCR progress events", smoke)
+
+    def test_webkitgtk_4_0_compatibility_shell_is_isolated_from_tauri_2(self) -> None:
+        standard = json.loads(
+            (ROOT / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8")
+        )
+        legacy = json.loads(
+            (ROOT / "compat" / "webkitgtk-4.0" / "src-tauri" / "tauri.conf.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        legacy_cargo = (
+            ROOT / "compat" / "webkitgtk-4.0" / "src-tauri" / "Cargo.toml"
+        ).read_text(encoding="utf-8")
+        bridge = (ROOT / "src" / "lib" / "tauri-bridge.ts").read_text(encoding="utf-8")
+
+        self.assertEqual(standard["$schema"], "https://schema.tauri.app/config/2")
+        self.assertIn('tauri = { version = "1.8"', legacy_cargo)
+        self.assertIn('"shell-sidecar"', legacy_cargo)
+        self.assertTrue(legacy["build"]["withGlobalTauri"])
+        self.assertEqual(legacy["tauri"]["bundle"]["targets"], ["appimage"])
+        self.assertEqual(
+            legacy["tauri"]["bundle"]["externalBin"], ["binaries/ocr-sidecar"]
+        )
+        self.assertTrue(legacy["tauri"]["allowlist"]["dialog"]["open"])
+        self.assertTrue(legacy["tauri"]["allowlist"]["shell"]["sidecar"])
+        self.assertIn("window.__TAURI__", bridge)
+        self.assertIn("VITE_WEBKITGTK_4_0", bridge)
+
+    def test_webkitgtk_4_0_action_uses_minimum_ubuntu_appimage_build(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "build-desktop.yml").read_text(
+            encoding="utf-8"
+        )
+        package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+        stage_script = (ROOT / "scripts" / "stage-webkit4-sidecar.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("image: ubuntu:20.04", workflow)
+        self.assertIn("libwebkit2gtk-4.0-dev", workflow)
+        self.assertIn("--bundles appimage", workflow)
+        self.assertIn("local-ocr-linux-x64-webkitgtk-4.0", workflow)
+        self.assertNotIn("--bundles deb", workflow)
+        legacy_job = workflow.split("build-linux-webkitgtk-4:", 1)[1]
+        self.assertIn("sidecar:smoke -- --prepare", legacy_job)
+        self.assertNotIn("--all-profiles", legacy_job)
+        self.assertIn("VITE_WEBKITGTK_4_0=1", package["scripts"]["build:webkit4"])
+        self.assertIn('"compat" / "webkitgtk-4.0"', stage_script)
 
 
 if __name__ == "__main__":

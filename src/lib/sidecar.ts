@@ -1,5 +1,5 @@
-import { Command, type Child } from "@tauri-apps/plugin-shell";
 import type { SidecarEvent } from "./types";
+import { createId, createSidecarCommand, type SidecarChild } from "./tauri-bridge";
 
 interface ProtocolMessage {
   id?: string | null;
@@ -20,7 +20,7 @@ interface PendingRequest {
 }
 
 class OcrSidecarClient {
-  private child: Child | null = null;
+  private child: SidecarChild | null = null;
   private pending = new Map<string, PendingRequest>();
   private stdoutBuffer = "";
   private stderrTail = "";
@@ -33,7 +33,7 @@ class OcrSidecarClient {
     if (this.child) return;
 
     this.stderrTail = "";
-    const command = Command.sidecar("binaries/ocr-sidecar");
+    const command = createSidecarCommand("binaries/ocr-sidecar");
     command.stdout.on("data", (chunk) => this.consumeStdout(String(chunk)));
     command.stderr.on("data", (line) => {
       const text = String(line);
@@ -100,7 +100,7 @@ class OcrSidecarClient {
   ): Promise<T> {
     if (!this.child) throw new Error("OCR sidecar 尚未启动");
 
-    const id = crypto.randomUUID();
+    const id = createId();
     const promise = new Promise<T>((resolve, reject) => {
       const timer = timeoutMs === null ? null : setTimeout(() => {
         this.pending.delete(id);

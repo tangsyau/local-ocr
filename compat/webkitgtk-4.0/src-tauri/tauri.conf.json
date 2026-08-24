@@ -1,0 +1,69 @@
+{
+  "build": {
+    "beforeBuildCommand": "npm run build:webkit4 --prefix ../..",
+    "beforeDevCommand": "VITE_WEBKITGTK_4_0=1 npm run dev --prefix ../..",
+    "devPath": "http://localhost:1420",
+    "distDir": "../../../dist-webkit4",
+    "withGlobalTauri": true
+  },
+  "package": {
+    "productName": "Local OCR WebKitGTK 4.0",
+    "version": "0.4.0"
+  },
+  "tauri": {
+    "allowlist": {
+      "dialog": {
+        "open": true
+      },
+      "protocol": {
+        "asset": true,
+        "assetScope": ["**"]
+      },
+      "shell": {
+        "sidecar": true,
+        "scope": [
+          {
+            "name": "ocr-sidecar",
+            "cmd": "binaries/ocr-sidecar",
+            "sidecar": true,
+            "args": false
+          }
+        ]
+      }
+    },
+    "bundle": {
+      "active": true,
+      "category": "Productivity",
+      "externalBin": ["binaries/ocr-sidecar"],
+      "icon": [
+        "../../../src-tauri/icons/32x32.png",
+        "../../../src-tauri/icons/128x128.png",
+        "../../../src-tauri/icons/128x128@2x.png",
+        "../../../src-tauri/icons/icon.icns",
+        "../../../src-tauri/icons/icon.ico"
+      ],
+      "identifier": "com.example.localocr.webkit4",
+      "longDescription": "Local OCR compatibility build for Linux distributions using WebKitGTK 4.0",
+      "shortDescription": "WebKitGTK 4.0 兼容版本地 OCR",
+      "targets": ["appimage"]
+    },
+    "security": {
+      "csp": "default-src 'self' tauri:; img-src 'self' asset: https://asset.localhost blob: data:; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost"
+    },
+    "updater": {
+      "active": false
+    },
+    "windows": [
+      {
+        "center": true,
+        "height": 900,
+        "maximized": true,
+        "minHeight": 700,
+        "minWidth": 1024,
+        "resizable": true,
+        "title": "本地 OCR（WebKitGTK 4.0）",
+        "width": 1440
+      }
+    ]
+  }
+}

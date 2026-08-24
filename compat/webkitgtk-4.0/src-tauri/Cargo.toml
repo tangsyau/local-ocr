@@ -1,0 +1,15 @@
+[package]
+name = "local-ocr-webkitgtk-4"
+version = "0.4.0"
+description = "WebKitGTK 4.0 compatibility shell for Local OCR"
+authors = ["Local OCR contributors"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "1.5", features = [] }
+
+[dependencies]
+tauri = { version = "1.8", features = ["dialog-open", "protocol-asset", "shell-sidecar"] }
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]

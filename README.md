@@ -1,6 +1,6 @@
 # Local OCR
 
-一个以隐私为优先的跨平台 OCR 桌面程序原型：Tauri 2 + Vue 3/TypeScript 图形界面，Python + PaddleOCR sidecar。当前 GitHub Actions 自动构建目标为 Windows x64 和 Linux x64。
+一个以隐私为优先的跨平台 OCR 桌面程序原型：Vue 3/TypeScript 图形界面，Python + PaddleOCR sidecar。Windows 和常规 Linux 版本使用 Tauri 2；另提供 Tauri 1 / WebKitGTK 4.0 的 Linux x64 兼容 AppImage。
 
 ## 当前功能
 
@@ -14,9 +14,10 @@
 - 每个文件独立保留结果，可校对、复制并批量导出同名 TXT；
 - Windows 发布版将 Tauri 主程序设为 GUI 子系统，并隐藏 sidecar 控制台，同时保留管道通信；
 - Windows 和 Linux 启动时默认最大化；较小屏幕仍可滚动和手动调整窗口；
+- Linux 同时提供 WebKitGTK 4.1 常规版和 WebKitGTK 4.0 兼容版，两个版本共用 OCR 功能；
 - NDJSON 标准输入/输出通信，不启动本地 HTTP 端口。
 
-当前结果类型预留了 `text`、`table` 和 `document`，但 0.3.2 只实现普通文字 OCR；图片表格不会恢复为行列和合并单元格结构。
+当前结果类型预留了 `text`、`table` 和 `document`，但 0.4.0 只实现普通文字 OCR；图片表格不会恢复为行列和合并单元格结构。
 
 ## 隐私边界
 
@@ -91,10 +92,13 @@ npm run tauri build
 
 ## 使用 GitHub Actions 构建
 
-仓库已经包含 `.github/workflows/build-desktop.yml`，使用 GitHub 托管的原生 x64 runner 分别构建：
+仓库已经包含 `.github/workflows/build-desktop.yml`，构建三个独立产物：
 
 - Windows x64：NSIS EXE；
-- Linux x64：AppImage。
+- Linux x64：Tauri 2 / WebKitGTK 4.1 AppImage；
+- Linux x64 WebKitGTK 4.0 兼容版：Tauri 1 AppImage，在 Ubuntu 20.04 容器中构建以降低系统基线。
+
+两个 Linux AppImage 是二选一，不需要同时安装。优先使用常规的 `local-ocr-linux-x64`；若目标电脑缺少 WebKitGTK 4.1、启动时报动态库错误，改用名称带 `webkitgtk-4.0` 的兼容版。兼容版标题栏和界面顶部会显示“WebKitGTK 4.0 兼容版”。
 
 ### 第一次运行
 
@@ -103,18 +107,25 @@ npm run tauri build
 3. 打开仓库的 **Actions** 页面；
 4. 选择 **Build Windows and Linux x64**；
 5. 点击 **Run workflow**；
-6. 两个任务完成后，在该次运行页面底部下载 `local-ocr-windows-x64` 和 `local-ocr-linux-x64`。
+6. 三个任务完成后，在该次运行页面底部按目标系统下载：
+   - `local-ocr-windows-x64`；
+   - `local-ocr-linux-x64`；
+   - `local-ocr-linux-x64-webkitgtk-4.0`。
 
 工作流也会在推送 `v*` 标签时自动运行，例如：
 
 ```bash
-git tag v0.3.2
-git push origin v0.3.2
+git tag v0.4.0
+git push origin v0.4.0
 ```
 
 构建产物作为 Actions Artifact 保存 14 天。当前产物没有代码签名，因此 Windows 首次运行可能显示 SmartScreen 警告。正式公开发布前还应修改 `src-tauri/tauri.conf.json` 中的 `com.example.localocr` 标识，并配置 Windows 代码签名。
 
-工作流对冻结后的 sidecar 和 PP-OCRv5 轻量/高精度模型分别使用内容寻址缓存：源码和依赖未变化时会跳过 PaddleOCR/PyInstaller 的重复安装与冻结。当前最小发布组合为 Windows NSIS EXE 和 Linux AppImage；DEB、RPM 暂不构建。单个平台总超时为 240 分钟，同时为依赖安装、sidecar 冻结、两档模型验证和 Tauri 打包设置了更短的分阶段超时。
+工作流对冻结后的 sidecar 和 PP-OCRv5 模型分别使用内容寻址缓存：源码和依赖未变化时会跳过 PaddleOCR/PyInstaller 的重复安装与冻结。常规 Windows/Linux 任务验证轻量和高精度两档；4.0 兼容任务为缩短首次构建时间，只重复验证轻量档及真实推理。Linux 两个版本都只生成 AppImage，DEB、RPM 暂不构建。单个任务总超时为 240 分钟，同时为依赖安装、sidecar 冻结、模型验证和 Tauri 打包设置了更短的分阶段超时。
+
+WebKitGTK 4.0 兼容版不是在 Tauri 2 配置上替换一个系统包：Tauri 2 的 Linux 后端使用 WebKitGTK 4.1，因此项目在 `compat/webkitgtk-4.0` 中保留了单独的 Tauri 1 壳。前端通过 `src/lib/tauri-bridge.ts` 适配 Tauri 1 全局 API 与 Tauri 2 模块 API，Python sidecar 仍是同一份源码。不要用兼容目录覆盖主 `src-tauri` 目录。
+
+AppImage 仍然受 Linux 内核、glibc、显卡驱动及桌面环境等因素影响，WebKitGTK 4.0 版的目标是覆盖只有 4.0 运行环境的机器，并不等于能在所有旧发行版上运行。建议将 GitHub Actions 生成的兼容版放到目标电脑做一次真实的启动、模型准备、图片识别和 PDF 识别测试。
 
 ### Actions 中执行的验证
 
@@ -177,11 +188,13 @@ npm run test:python
 ```text
 src/                         Vue 界面与 sidecar 客户端
 src-tauri/                   Tauri 配置、权限和 Rust 壳
+compat/webkitgtk-4.0/        Tauri 1 / WebKitGTK 4.0 兼容壳
 sidecar/main.py              NDJSON 协议入口
 sidecar/engine.py            PaddleOCR 初始化与结果标准化
 sidecar/network_guard.py     推理阶段 Python 网络守卫
 scripts/build-sidecar.py     PyInstaller 与 Tauri target triple 处理
 scripts/smoke-sidecar.py     冻结后 sidecar 与模型载入检查
+scripts/stage-webkit4-sidecar.py  将同平台 sidecar 放入兼容壳
 .github/workflows/           Windows/Linux x64 自动构建
 ```
 
