@@ -17,7 +17,7 @@
 - Linux 同时提供 WebKitGTK 4.1 常规版和 WebKitGTK 4.0 兼容版，两个版本共用 OCR 功能；
 - NDJSON 标准输入/输出通信，不启动本地 HTTP 端口。
 
-当前结果类型预留了 `text`、`table` 和 `document`，但 0.4.0 只实现普通文字 OCR；图片表格不会恢复为行列和合并单元格结构。
+当前结果类型预留了 `text`、`table` 和 `document`，但 0.4.1 只实现普通文字 OCR；图片表格不会恢复为行列和合并单元格结构。
 
 ## 隐私边界
 
@@ -115,13 +115,15 @@ npm run tauri build
 工作流也会在推送 `v*` 标签时自动运行，例如：
 
 ```bash
-git tag v0.4.0
-git push origin v0.4.0
+git tag v0.4.1
+git push origin v0.4.1
 ```
 
 构建产物作为 Actions Artifact 保存 14 天。当前产物没有代码签名，因此 Windows 首次运行可能显示 SmartScreen 警告。正式公开发布前还应修改 `src-tauri/tauri.conf.json` 中的 `com.example.localocr` 标识，并配置 Windows 代码签名。
 
 工作流对冻结后的 sidecar 和 PP-OCRv5 模型分别使用内容寻址缓存：源码和依赖未变化时会跳过 PaddleOCR/PyInstaller 的重复安装与冻结。常规 Windows/Linux 任务验证轻量和高精度两档；4.0 兼容任务为缩短首次构建时间，只重复验证轻量档及真实推理。Linux 两个版本都只生成 AppImage，DEB、RPM 暂不构建。单个任务总超时为 240 分钟，同时为依赖安装、sidecar 冻结、模型验证和 Tauri 打包设置了更短的分阶段超时。
+
+4.0 任务运行在 Ubuntu 20.04 容器内。该任务没有启用 `setup-python` 自带的 `cache: pip`，因为 GitHub 宿主工具缓存挂载到容器后，`pip` 启动脚本可能仍引用容器外的绝对路径并报 `ENOENT`。依赖安装始终使用 `python -m pip`；冻结 sidecar 和 PaddleOCR 模型仍分别使用 Actions 缓存。
 
 WebKitGTK 4.0 兼容版不是在 Tauri 2 配置上替换一个系统包：Tauri 2 的 Linux 后端使用 WebKitGTK 4.1，因此项目在 `compat/webkitgtk-4.0` 中保留了单独的 Tauri 1 壳。前端通过 `src/lib/tauri-bridge.ts` 适配 Tauri 1 全局 API 与 Tauri 2 模块 API，Python sidecar 仍是同一份源码。不要用兼容目录覆盖主 `src-tauri` 目录。
 

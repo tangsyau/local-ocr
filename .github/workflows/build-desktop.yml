@@ -192,10 +192,11 @@ jobs:
         with:
           python-version: "3.11"
           architecture: x64
-          cache: pip
-          cache-dependency-path: |
-            sidecar/requirements.txt
-            sidecar/requirements-build.txt
+
+      - name: Verify container Python entry point
+        run: |
+          python --version
+          python -m pip --version
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable

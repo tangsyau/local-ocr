@@ -112,6 +112,8 @@ class ProjectConfigTests(unittest.TestCase):
         legacy_job = workflow.split("build-linux-webkitgtk-4:", 1)[1]
         self.assertIn("sidecar:smoke -- --prepare", legacy_job)
         self.assertNotIn("--all-profiles", legacy_job)
+        self.assertIn("python -m pip --version", legacy_job)
+        self.assertNotIn("cache: pip", legacy_job)
         self.assertIn("VITE_WEBKITGTK_4_0=1", package["scripts"]["build:webkit4"])
         self.assertIn('"compat" / "webkitgtk-4.0"', stage_script)
 
