@@ -292,7 +292,7 @@ jobs:
         run: |
           appimage_path="$(find compat/webkitgtk-4.0/src-tauri/target/release/bundle/appimage -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
           test -n "$appimage_path"
-          python scripts/check-glibc-baseline.py "$appimage_path" --max 2.28
+          python scripts/check-glibc-baseline.py "$appimage_path" --max 2.28 --require-executable ocr-sidecar
 
       - name: Upload WebKitGTK 4.0 AppImage
         uses: actions/upload-artifact@v6

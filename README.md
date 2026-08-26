@@ -17,7 +17,7 @@
 - Linux 同时提供 WebKitGTK 4.1 常规版和 WebKitGTK 4.0 兼容版，两个版本共用 OCR 功能；
 - NDJSON 标准输入/输出通信，不启动本地 HTTP 端口。
 
-当前结果类型预留了 `text`、`table` 和 `document`，但 0.4.4 只实现普通文字 OCR；图片表格不会恢复为行列和合并单元格结构。
+当前结果类型预留了 `text`、`table` 和 `document`，但 0.4.5 只实现普通文字 OCR；图片表格不会恢复为行列和合并单元格结构。
 
 ## 隐私边界
 
@@ -115,8 +115,8 @@ npm run tauri build
 工作流也会在推送 `v*` 标签时自动运行，例如：
 
 ```bash
-git tag v0.4.4
-git push origin v0.4.4
+git tag v0.4.5
+git push origin v0.4.5
 ```
 
 构建产物作为 Actions Artifact 保存 14 天。当前产物没有代码签名，因此 Windows 首次运行可能显示 SmartScreen 警告。正式公开发布前还应修改 `src-tauri/tauri.conf.json` 中的 `com.example.localocr` 标识，并配置 Windows 代码签名。
@@ -125,7 +125,7 @@ git push origin v0.4.4
 
 4.0 任务运行在 Debian 10 Buster（glibc 2.28）容器内，并使用 `archive.debian.org` 中的归档软件源。任务不调用 `actions/setup-python`，因为后者可能把为较新 glibc 构建的宿主 Python 工具缓存挂载进旧容器，先后造成 `pip ENOENT` 或 `GLIBC_2.34 not found`。兼容任务使用提交哈希固定的 `setup-uv` v10.0.1，下载可移植的 Python 3.11.15，在仓库内创建 `.venv` 后才安装及冻结 sidecar；冻结 sidecar、uv 下载和 PaddleOCR 模型均有独立缓存。setup-uv 从 v8 起不再发布 `@v8`、`@v9` 形式的浮动主版本标签，因此不要把固定哈希改回 `astral-sh/setup-uv@v9`。
 
-兼容任务在上传 Artifact 前会解包 AppImage，并检查主程序以及其中所有 ELF 动态库声明的 GLIBC 版本；只要有文件高于 GLIBC 2.28，构建就会失败并列出具体文件。这用于避免在较新容器或错误缓存下生成名称看似兼容、实际仍要求 GLIBC 2.29/2.30 的包。目标系统至少需要 glibc 2.28。
+兼容任务在上传 Artifact 前会解包 AppImage，确认其中存在可执行的 `ocr-sidecar`，并检查主程序以及其中所有 ELF 动态库声明的 GLIBC 版本；只要缺少 sidecar，或者有文件高于 GLIBC 2.28，构建就会失败并列出具体问题。这用于避免在较新容器、错误缓存或外部二进制配置不一致时生成无法使用的兼容包。目标系统至少需要 glibc 2.28。
 
 WebKitGTK 4.0 兼容版不是在 Tauri 2 配置上替换一个系统包：Tauri 2 的 Linux 后端使用 WebKitGTK 4.1，因此项目在 `compat/webkitgtk-4.0` 中保留了单独的 Tauri 1 壳。前端通过 `src/lib/tauri-bridge.ts` 适配 Tauri 1 全局 API 与 Tauri 2 模块 API，Python sidecar 仍是同一份源码。不要用兼容目录覆盖主 `src-tauri` 目录。
 
@@ -160,7 +160,7 @@ OCR 推理期间会把 PaddleOCR 的普通 stdout 日志重定向到 stderr，�
 
 ### 安装后显示“sidecar 尚未启动”
 
-界面会在启动时自动运行随安装包附带的 OCR sidecar。若启动失败，“准备模型”按钮会变为“启动并准备模型”，点击后可重试；窗口底部会保留具体的权限、路径或进程退出错误。Tauri 的 sidecar 权限项必须让 `name` 与 `Command.sidecar()`/`externalBin` 的值逐字一致（本项目均为 `binaries/ocr-sidecar`），不要额外添加安装后路径不稳定的 `cmd` 限制。项目测试会自动检查这三处配置。
+界面会在启动时自动运行随安装包附带的 OCR sidecar。若启动失败，“准备模型”按钮会变为“启动并准备模型”，点击后可重试；窗口底部会保留具体的权限、路径或进程退出错误。Tauri 1 和 Tauri 2 的 sidecar 权限项必须让 `name` 与 `Command.sidecar()`/`externalBin` 的值逐字一致（本项目均为 `binaries/ocr-sidecar`），不要额外添加安装后路径不稳定的 `cmd` 限制。项目测试会自动检查这三处配置，并在兼容 AppImage 打包后检查 sidecar 文件是否确实存在。
 
 ## 不启动 GUI，单独测试 sidecar
 

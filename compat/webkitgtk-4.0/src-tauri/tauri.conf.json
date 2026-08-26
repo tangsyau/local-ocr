@@ -8,7 +8,7 @@
   },
   "package": {
     "productName": "Local OCR WebKitGTK 4.0",
-    "version": "0.4.4"
+    "version": "0.4.5"
   },
   "tauri": {
     "allowlist": {
@@ -23,8 +23,7 @@
         "sidecar": true,
         "scope": [
           {
-            "name": "ocr-sidecar",
-            "cmd": "binaries/ocr-sidecar",
+            "name": "binaries/ocr-sidecar",
             "sidecar": true,
             "args": false
           }

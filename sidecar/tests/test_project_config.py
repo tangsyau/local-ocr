@@ -90,6 +90,17 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertEqual(
             legacy["tauri"]["bundle"]["externalBin"], ["binaries/ocr-sidecar"]
         )
+        legacy_scope = legacy["tauri"]["allowlist"]["shell"]["scope"]
+        self.assertEqual(
+            legacy_scope,
+            [
+                {
+                    "name": legacy["tauri"]["bundle"]["externalBin"][0],
+                    "sidecar": True,
+                    "args": False,
+                }
+            ],
+        )
         self.assertTrue(legacy["tauri"]["allowlist"]["dialog"]["open"])
         self.assertTrue(legacy["tauri"]["allowlist"]["shell"]["sidecar"])
         self.assertIn("window.__TAURI__", bridge)
@@ -127,6 +138,7 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertIn("ocr-sidecar-webkit4-debian10-glibc228-py311", legacy_job)
         self.assertIn("check-glibc-baseline.py", legacy_job)
         self.assertIn("--max 2.28", legacy_job)
+        self.assertIn("--require-executable ocr-sidecar", legacy_job)
         self.assertIn("python -m pip --version", legacy_job)
         self.assertNotIn("cache: pip", legacy_job)
         self.assertIn("VITE_WEBKITGTK_4_0=1", package["scripts"]["build:webkit4"])

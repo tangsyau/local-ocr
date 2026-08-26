@@ -60,6 +60,12 @@ def main() -> int:
     )
     parser.add_argument("appimage", type=Path)
     parser.add_argument("--max", dest="maximum", type=parse_version, required=True)
+    parser.add_argument(
+        "--require-executable",
+        action="append",
+        default=[],
+        help="Require an executable with this basename inside the AppImage.",
+    )
     args = parser.parse_args()
 
     appimage = args.appimage.resolve()
@@ -75,6 +81,20 @@ def main() -> int:
             stdout=subprocess.DEVNULL,
         )
         appdir = extraction_dir / "squashfs-root"
+        for executable_name in args.require_executable:
+            matches = [
+                path
+                for path in appdir.rglob(executable_name)
+                if path.is_file() and path.stat().st_mode & 0o111
+            ]
+            if not matches:
+                raise RuntimeError(
+                    f"Required executable is missing from AppImage: {executable_name}"
+                )
+            print(
+                f"Found bundled executable {executable_name}: "
+                f"{matches[0].relative_to(appdir)}"
+            )
         candidates = [appimage, *(path for path in appdir.rglob("*") if path.is_file())]
         requirements = scan_elf_files(candidates)
 
