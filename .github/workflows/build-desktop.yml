@@ -150,16 +150,23 @@ jobs:
           retention-days: 14
 
   build-linux-webkitgtk-4:
-    name: Linux x64 WebKitGTK 4.0 Experimental
+    name: Linux x64 WebKitGTK 4.0 (glibc 2.28)
     runs-on: ubuntu-22.04
     container:
-      image: debian:bullseye-slim
+      image: debian:buster-slim
     timeout-minutes: 240
 
     steps:
-      - name: Prepare Debian 11 build container
+      - name: Prepare Debian 10 build container
         shell: bash
         run: |
+          printf '%s\n' \
+            'deb http://archive.debian.org/debian buster main' \
+            'deb http://archive.debian.org/debian buster-updates main' \
+            'deb http://archive.debian.org/debian-security buster/updates main' \
+            > /etc/apt/sources.list
+          printf '%s\n' 'Acquire::Check-Valid-Until "false";' \
+            > /etc/apt/apt.conf.d/99debian-archive
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y \
             build-essential \
@@ -178,7 +185,7 @@ jobs:
             xdg-utils \
             xz-utils \
             zstd
-          DEBIAN_FRONTEND=noninteractive apt-get install -y libayatana-appindicator3-dev
+          DEBIAN_FRONTEND=noninteractive apt-get install -y libappindicator3-dev
 
       - name: Check out source
         uses: actions/checkout@v7
@@ -210,6 +217,7 @@ jobs:
           python --version
           python -m pip --version
           ldd --version | head -n 1
+          ldd --version | head -n 1 | grep -F '2.28'
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -218,14 +226,14 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: "./compat/webkitgtk-4.0/src-tauri -> target"
-          key: webkitgtk-4.0-debian11
+          key: webkitgtk-4.0-debian10-glibc228
 
       - name: Restore WebKitGTK 4.0 frozen OCR sidecar
         id: sidecar-webkit4-cache
         uses: actions/cache@v5
         with:
           path: src-tauri/binaries/ocr-sidecar-*
-          key: ocr-sidecar-webkit4-debian11-py311-${{ runner.arch }}-${{ hashFiles('sidecar/**/*.py', 'sidecar/requirements*.txt', 'scripts/build-sidecar.py', 'scripts/platform_target.py') }}
+          key: ocr-sidecar-webkit4-debian10-glibc228-py311-${{ runner.arch }}-${{ hashFiles('sidecar/**/*.py', 'sidecar/requirements*.txt', 'scripts/build-sidecar.py', 'scripts/platform_target.py') }}
 
       - name: Restore PaddleOCR models
         uses: actions/cache@v5
@@ -252,7 +260,7 @@ jobs:
           npm run build:webkit4
           npm run test:python
 
-      - name: Freeze Python sidecar on Debian 11
+      - name: Freeze Python sidecar on Debian 10
         if: steps.sidecar-webkit4-cache.outputs.cache-hit != 'true'
         timeout-minutes: 45
         run: npm run sidecar:build
@@ -279,10 +287,17 @@ jobs:
           VITE_WEBKITGTK_4_0: "1"
         run: ../../node_modules/.bin/tauri build --bundles appimage --ci
 
+      - name: Verify AppImage GLIBC 2.28 baseline
+        shell: bash
+        run: |
+          appimage_path="$(find compat/webkitgtk-4.0/src-tauri/target/release/bundle/appimage -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
+          test -n "$appimage_path"
+          python scripts/check-glibc-baseline.py "$appimage_path" --max 2.28
+
       - name: Upload WebKitGTK 4.0 AppImage
         uses: actions/upload-artifact@v6
         with:
-          name: local-ocr-linux-x64-webkitgtk-4.0
+          name: local-ocr-linux-x64-webkitgtk-4.0-glibc-2.28
           path: compat/webkitgtk-4.0/src-tauri/target/release/bundle/appimage/*.AppImage
           if-no-files-found: error
           compression-level: 0

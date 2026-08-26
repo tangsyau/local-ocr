@@ -104,10 +104,13 @@ class ProjectConfigTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("image: debian:bullseye-slim", workflow)
+        self.assertIn("image: debian:buster-slim", workflow)
+        self.assertIn("archive.debian.org/debian buster", workflow)
+        self.assertIn('Acquire::Check-Valid-Until "false";', workflow)
+        self.assertIn("libappindicator3-dev", workflow)
         self.assertIn("libwebkit2gtk-4.0-dev", workflow)
         self.assertIn("--bundles appimage", workflow)
-        self.assertIn("local-ocr-linux-x64-webkitgtk-4.0", workflow)
+        self.assertIn("local-ocr-linux-x64-webkitgtk-4.0-glibc-2.28", workflow)
         self.assertNotIn("--bundles deb", workflow)
         legacy_job = workflow.split("build-linux-webkitgtk-4:", 1)[1]
         self.assertIn("sidecar:smoke -- --prepare", legacy_job)
@@ -121,7 +124,9 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertIn('version: "latest-known"', legacy_job)
         self.assertIn("uv python install 3.11.15", legacy_job)
         self.assertIn(".venv/bin", legacy_job)
-        self.assertIn("ocr-sidecar-webkit4-debian11-py311", legacy_job)
+        self.assertIn("ocr-sidecar-webkit4-debian10-glibc228-py311", legacy_job)
+        self.assertIn("check-glibc-baseline.py", legacy_job)
+        self.assertIn("--max 2.28", legacy_job)
         self.assertIn("python -m pip --version", legacy_job)
         self.assertNotIn("cache: pip", legacy_job)
         self.assertIn("VITE_WEBKITGTK_4_0=1", package["scripts"]["build:webkit4"])

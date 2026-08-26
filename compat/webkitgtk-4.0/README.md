@@ -4,7 +4,9 @@ This directory contains the Tauri 1 shell used only for the Linux x64
 WebKitGTK 4.0 AppImage. The Vue frontend and Python OCR sidecar remain shared
 with the main Tauri 2/WebKitGTK 4.1 build.
 
-The GitHub Actions workflow builds this shell inside a Debian 11 container.
+The GitHub Actions workflow builds this shell inside a Debian 10 container and
+rejects an AppImage if any bundled ELF file requires a GLIBC version newer than
+2.28.
 Do not replace the main `src-tauri` directory with this compatibility shell.
 
 It intentionally produces only an AppImage. The main Linux artifact keeps the
