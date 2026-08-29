@@ -136,6 +136,30 @@ class EngineSchemaTests(unittest.TestCase):
         self.assertEqual(captured["text_detection_model_name"], "PP-OCRv5_mobile_det")
         self.assertFalse(captured["use_doc_orientation_classify"])
 
+    def test_table_recognition_disables_lazy_orientation_downloads(self) -> None:
+        captured: dict[str, object] = {}
+
+        class FakeTablePipeline:
+            def predict_iter(self, **kwargs: object) -> object:
+                captured.update(kwargs)
+                return iter([FakeTableResult()])
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            image_path = Path(temp_dir) / "table.png"
+            image_path.write_bytes(b"not-needed-by-the-fake-pipeline")
+            engine = OcrEngine()
+            engine._ocr = FakeTablePipeline()
+            engine._profile = "fast"
+            engine._mode = "table"
+            result = engine.recognize(str(image_path), mode="table")
+
+        self.assertEqual(result["resultType"], "table")
+        self.assertFalse(captured["use_doc_orientation_classify"])
+        self.assertFalse(captured["use_doc_unwarping"])
+        self.assertFalse(captured["use_table_orientation_classify"])
+        self.assertTrue(captured["use_layout_detection"])
+        self.assertTrue(captured["use_ocr_model"])
+
     def test_export_text_results_avoids_name_collisions(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             first = Path(temp_dir) / "报告.txt"

@@ -19,7 +19,7 @@
 - Linux 同时提供 WebKitGTK 4.1 常规版和 WebKitGTK 4.0 兼容版，两个版本共用 OCR 功能；
 - NDJSON 标准输入/输出通信，不启动本地 HTTP 端口。
 
-0.5.0 的表格功能属于轻量档：适合常见有线表格和较规整的无线表格。它会恢复行列、单元格文字以及模型判断出的 `rowspan`/`colspan`，但不会还原原始字体、公式、单元格颜色、精确列宽或 Excel 计算逻辑；倾斜严重、跨页、密集小字和拍照畸变表格仍可能需要人工校对。
+0.5.1 的表格功能属于轻量档：适合常见有线表格和较规整的无线表格。它会恢复行列、单元格文字以及模型判断出的 `rowspan`/`colspan`，但不会还原原始字体、公式、单元格颜色、精确列宽或 Excel 计算逻辑。轻量档明确关闭了会在首次推理时懒下载模型的表格方向分类，因此应先把横置或倒置的表格旋转到正常阅读方向；倾斜严重、跨页、密集小字和拍照畸变表格仍可能需要人工校对。
 
 ## 隐私边界
 
@@ -117,8 +117,8 @@ npm run tauri build
 工作流也会在推送 `v*` 标签时自动运行，例如：
 
 ```bash
-git tag v0.5.0
-git push origin v0.5.0
+git tag v0.5.1
+git push origin v0.5.1
 ```
 
 构建产物作为 Actions Artifact 保存 14 天。当前产物没有代码签名，因此 Windows 首次运行可能显示 SmartScreen 警告。正式公开发布前还应修改 `src-tauri/tauri.conf.json` 中的 `com.example.localocr` 标识，并配置 Windows 代码签名。

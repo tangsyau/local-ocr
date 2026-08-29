@@ -408,10 +408,28 @@ class OcrEngine:
             progress(message, 0, "status", total_page_count)
 
         with block_python_network(), contextlib.redirect_stdout(sys.stderr):
-            results = self._ocr.predict_iter(
-                input=str(path),
-                text_rec_score_thresh=score_threshold,
-            )
+            predict_options: dict[str, Any] = {
+                "input": str(path),
+                "text_rec_score_thresh": score_threshold,
+            }
+            if mode == "table":
+                # TableRecognitionPipelineV2 defaults this separate orientation
+                # switch to True at prediction time. PaddleX then lazily creates
+                # and downloads its orientation classifier even though document
+                # orientation was disabled when the pipeline was constructed.
+                # Recognition runs behind the network guard, so the lightweight
+                # profile must explicitly disable every optional preprocessing
+                # model here as well as in prepare().
+                predict_options.update(
+                    {
+                        "use_doc_orientation_classify": False,
+                        "use_doc_unwarping": False,
+                        "use_layout_detection": True,
+                        "use_ocr_model": True,
+                        "use_table_orientation_classify": False,
+                    }
+                )
+            results = self._ocr.predict_iter(**predict_options)
             for page_number, result in enumerate(results, start=1):
                 page = extract_table_page(result) if mode == "table" else extract_page(result)
                 pages.append(page)
