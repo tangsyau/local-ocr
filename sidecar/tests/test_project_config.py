@@ -76,6 +76,10 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertIn('method == "export_tables"', sidecar)
         self.assertIn("--table", smoke)
         self.assertIn("scrollbar-gutter: stable", styles)
+        self.assertIn("overflow-y: scroll", styles)
+        self.assertIn("overflow-x: scroll", styles)
+        self.assertIn("width: max-content", styles)
+        self.assertIn('aria-label="表格识别结果，可上下滚动"', app)
 
     def test_table_parser_dependencies_and_frozen_metadata_are_configured(self) -> None:
         requirements = (ROOT / "sidecar" / "requirements.txt").read_text(encoding="utf-8")

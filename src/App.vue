@@ -507,7 +507,7 @@ function showError(error: unknown): void {
               <div><b>{{ (selectedResult.elapsedMs / 1000).toFixed(2) }}s</b><span>用时</span></div>
             </div>
             <textarea v-if="resultView === 'text'" :value="selectedResult.text" spellcheck="false" aria-label="识别文本" @input="updateSelectedText"></textarea>
-            <div v-else class="table-results">
+            <div v-else class="table-results" tabindex="0" aria-label="表格识别结果，可上下滚动">
               <section v-for="table in selectedTables" :key="`${table.pageIndex}-${table.tableIndex}`" class="table-card">
                 <div class="table-card-title">
                   <strong>
@@ -516,7 +516,7 @@ function showError(error: unknown): void {
                   </strong>
                   <small>{{ table.score === null ? "结构已恢复" : `定位置信度 ${(table.score * 100).toFixed(1)}%` }}</small>
                 </div>
-                <div class="table-scroll">
+                <div class="table-scroll" tabindex="0" aria-label="表格内容，可左右滚动">
                   <table>
                     <tbody>
                       <tr v-for="(row, rowIndex) in table.rows" :key="rowIndex">
