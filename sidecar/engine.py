@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import ctypes
 import gc
 import html
 import os
+import re
 import sys
 import threading
 import time
+from difflib import SequenceMatcher
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Callable
@@ -214,7 +217,9 @@ def extract_table_page(result: Any) -> dict[str, Any]:
         tables.append(
             {
                 "pageIndex": page_index,
+                "endPageIndex": page_index,
                 "tableIndex": index,
+                "sourceTableCount": 1,
                 "score": float(layout["score"]) if layout.get("score") is not None else None,
                 "box": box,
                 "html": safe_table_html(rows),
@@ -223,6 +228,120 @@ def extract_table_page(result: Any) -> dict[str, Any]:
         )
     page["tables"] = tables
     return page
+
+
+def _table_column_count(table: dict[str, Any]) -> int:
+    return max(
+        (
+            int(cell.get("column") or 0) + max(1, int(cell.get("colSpan") or 1))
+            for row in table.get("rows") or []
+            for cell in row
+        ),
+        default=0,
+    )
+
+
+def _normalized_cell_text(value: Any) -> str:
+    return re.sub(r"[\W_]+", "", str(value or "").casefold(), flags=re.UNICODE)
+
+
+def _rows_match(left: list[dict[str, Any]], right: list[dict[str, Any]]) -> bool:
+    if len(left) != len(right) or not left:
+        return False
+    left_structure = [
+        (int(cell.get("column") or 0), max(1, int(cell.get("colSpan") or 1)))
+        for cell in left
+    ]
+    right_structure = [
+        (int(cell.get("column") or 0), max(1, int(cell.get("colSpan") or 1)))
+        for cell in right
+    ]
+    if left_structure != right_structure:
+        return False
+
+    pairs = [
+        (_normalized_cell_text(left_cell.get("text")), _normalized_cell_text(right_cell.get("text")))
+        for left_cell, right_cell in zip(left, right)
+    ]
+    if not any(left_text and right_text for left_text, right_text in pairs):
+        return False
+    similarities = [
+        SequenceMatcher(None, left_text, right_text).ratio()
+        if left_text and right_text
+        else float(left_text == right_text)
+        for left_text, right_text in pairs
+    ]
+    return sum(similarities) / len(similarities) >= 0.82 and sum(
+        similarity >= 0.72 for similarity in similarities
+    ) >= max(1, (3 * len(similarities) + 3) // 4)
+
+
+def _repeated_header_rows(left: dict[str, Any], right: dict[str, Any]) -> int:
+    if _table_column_count(left) != _table_column_count(right):
+        return 0
+    left_rows = list(left.get("rows") or [])
+    right_rows = list(right.get("rows") or [])
+    repeated = 0
+    for index in range(min(3, len(left_rows), len(right_rows))):
+        if not _rows_match(left_rows[index], right_rows[index]):
+            break
+        repeated += 1
+    return repeated
+
+
+def merge_cross_page_tables(pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Conservatively merge one-table pages that repeat the same leading header."""
+
+    merged: list[dict[str, Any]] = []
+    previous_page_tables: list[dict[str, Any]] = []
+    for page in pages:
+        page_tables = list(page.get("tables") or [])
+        page_index = page.get("pageIndex")
+        if len(page_tables) == 1 and len(previous_page_tables) == 1 and merged:
+            candidate = merged[-1]
+            candidate_end = candidate.get("endPageIndex")
+            if (
+                isinstance(page_index, int)
+                and isinstance(candidate_end, int)
+                and page_index == candidate_end + 1
+            ):
+                repeated_rows = _repeated_header_rows(candidate, page_tables[0])
+                if repeated_rows:
+                    continuation_rows = copy.deepcopy(page_tables[0].get("rows") or [])[repeated_rows:]
+                    existing_end = max(
+                        (
+                            int(cell.get("row") or 0) + max(1, int(cell.get("rowSpan") or 1))
+                            for row in candidate.get("rows") or []
+                            for cell in row
+                        ),
+                        default=0,
+                    )
+                    continuation_start = min(
+                        (
+                            int(cell.get("row") or 0)
+                            for row in continuation_rows
+                            for cell in row
+                        ),
+                        default=existing_end,
+                    )
+                    row_offset = existing_end - continuation_start
+                    for row in continuation_rows:
+                        for cell in row:
+                            cell["row"] = int(cell.get("row") or 0) + row_offset
+                    candidate["rows"].extend(continuation_rows)
+                    candidate["endPageIndex"] = page_index
+                    candidate["sourceTableCount"] = int(candidate.get("sourceTableCount") or 1) + 1
+                    candidate["html"] = safe_table_html(candidate["rows"])
+                    previous_page_tables = page_tables
+                    continue
+
+        for table in page_tables:
+            normalized = copy.deepcopy(table)
+            normalized["endPageIndex"] = normalized.get("pageIndex")
+            normalized["sourceTableCount"] = 1
+            merged.append(normalized)
+        previous_page_tables = page_tables
+    return merged
 
 
 def document_page_count(path: Path) -> int:
@@ -453,6 +572,7 @@ class OcrEngine:
                     break
 
         elapsed_ms = round((time.perf_counter() - started) * 1000)
+        tables = merge_cross_page_tables(pages) if mode == "table" else []
         return {
             "path": str(path),
             "profile": self._profile,
@@ -462,9 +582,11 @@ class OcrEngine:
             "pageCount": len(pages),
             "totalPageCount": total_page_count,
             "blockCount": sum(len(page["blocks"]) for page in pages),
-            "tableCount": sum(len(page["tables"]) for page in pages),
+            "tableCount": len(tables),
+            "rawTableCount": sum(len(page["tables"]) for page in pages),
             "elapsedMs": elapsed_ms,
             "pages": pages,
+            "tables": tables,
         }
 
 
@@ -524,8 +646,19 @@ def export_table_results(directory_value: str, items: list[dict[str, Any]]) -> d
         html_sections: list[str] = []
         for ordinal, table in enumerate(tables, start=1):
             page_number = int(table.get("pageIndex") or 0) + 1
+            end_page_number = int(table.get("endPageIndex") or table.get("pageIndex") or 0) + 1
+            page_label = (
+                f"第 {page_number}–{end_page_number} 页"
+                if end_page_number > page_number
+                else f"第 {page_number} 页"
+            )
             table_number = int(table.get("tableIndex") or (ordinal - 1)) + 1
-            base_title = f"P{page_number}-T{table_number}"[:31]
+            page_token = (
+                f"P{page_number}-{end_page_number}"
+                if end_page_number > page_number
+                else f"P{page_number}"
+            )
+            base_title = f"{page_token}-T{table_number}"[:31]
             title = base_title
             suffix = 2
             while title in workbook.sheetnames:
@@ -563,7 +696,7 @@ def export_table_results(directory_value: str, items: list[dict[str, Any]]) -> d
 
             table_html = safe_table_html(rows)
             html_sections.append(
-                f"<section><h2>第 {page_number} 页 · 表格 {table_number}</h2>{table_html}</section>"
+                f"<section><h2>{page_label} · 表格 {table_number}</h2>{table_html}</section>"
             )
 
         workbook.save(xlsx_path)

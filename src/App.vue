@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ocrSidecar } from "./lib/sidecar";
 import { convertLocalFileSrc, createId, isWebkitGtk40Build, openLocalDialog } from "./lib/tauri-bridge";
-import type { ModelProfile, OcrResult, OcrTask, OcrTaskStatus, RecognitionMode, SidecarEvent } from "./lib/types";
+import type { ModelProfile, OcrResult, OcrTable, OcrTask, OcrTaskStatus, RecognitionMode, SidecarEvent } from "./lib/types";
 
 type AppPhase = "starting" | "idle" | "preparing" | "recognizing" | "paused" | "error";
 
@@ -36,7 +36,9 @@ const queuedCount = computed(() => tasks.value.filter((task) => task.status === 
 const completedCount = computed(() => tasks.value.filter((task) => task.status === "completed").length);
 const exportableTasks = computed(() => tasks.value.filter((task) => task.status === "completed" && task.result));
 const tableTasks = computed(() => exportableTasks.value.filter((task) => (task.result?.tableCount ?? 0) > 0));
-const selectedTables = computed(() => selectedResult.value?.pages.flatMap((page) => page.tables) ?? []);
+const selectedTables = computed(
+  () => selectedResult.value?.tables ?? selectedResult.value?.pages.flatMap((page) => page.tables) ?? []
+);
 
 const statusLabels: Record<OcrTaskStatus, string> = {
   queued: "等待",
@@ -336,7 +338,7 @@ async function exportAllTables(): Promise<void> {
         directory,
         items: tableTasks.value.map((task) => ({
           fileName: task.fileName,
-          tables: task.result?.pages.flatMap((page) => page.tables) ?? []
+          tables: task.result?.tables ?? task.result?.pages.flatMap((page) => page.tables) ?? []
         }))
       },
       undefined,
@@ -348,8 +350,34 @@ async function exportAllTables(): Promise<void> {
   }
 }
 
-async function copyText(): Promise<void> {
-  if (!selectedResult.value?.text) return;
+function tableToTsv(table: OcrTable): string {
+  const height = Math.max(
+    0,
+    ...table.rows.flatMap((row) => row.map((cell) => cell.row + Math.max(1, cell.rowSpan)))
+  );
+  const width = Math.max(
+    0,
+    ...table.rows.flatMap((row) => row.map((cell) => cell.column + Math.max(1, cell.colSpan)))
+  );
+  const grid = Array.from({ length: height }, () => Array.from({ length: width }, () => ""));
+  for (const row of table.rows) {
+    for (const cell of row) {
+      grid[cell.row][cell.column] = cell.text.replace(/[\t\r\n]+/g, " ").trim();
+    }
+  }
+  return grid.map((row) => row.join("\t")).join("\n");
+}
+
+async function copyCurrentResult(): Promise<void> {
+  if (!selectedResult.value) return;
+  if (resultView.value === "tables") {
+    if (!selectedTables.value.length) return;
+    const tsv = selectedTables.value.map(tableToTsv).filter(Boolean).join("\n\n");
+    await navigator.clipboard.writeText(tsv);
+    status.value = `已复制 ${selectedTables.value.length} 个表格的制表符文本，可直接粘贴到 Excel`;
+    return;
+  }
+  if (!selectedResult.value.text) return;
   await navigator.clipboard.writeText(selectedResult.value.text);
   status.value = `${fileName.value} 的识别文本已复制到剪贴板`;
 }
@@ -464,21 +492,28 @@ function showError(error: unknown): void {
                 <button :class="{ active: resultView === 'text' }" @click="resultView = 'text'">文本</button>
                 <button :class="{ active: resultView === 'tables' }" :disabled="!selectedTables.length" @click="resultView = 'tables'">表格 {{ selectedTables.length }}</button>
               </div>
-              <button class="text-button" :disabled="!selectedResult?.text" @click="copyText">复制全文</button>
+              <button
+                class="text-button"
+                :disabled="resultView === 'tables' ? !selectedTables.length : !selectedResult?.text"
+                @click="copyCurrentResult"
+              >{{ resultView === "tables" ? "复制表格（TSV）" : "复制全文" }}</button>
             </div>
           </div>
           <div v-if="selectedResult" class="result-body">
             <div class="metrics">
               <div><b>{{ selectedResult.pageCount }} / {{ selectedResult.totalPageCount }}</b><span>已完成 / 总页数</span></div>
               <div><b>{{ selectedResult.blockCount }}</b><span>文本块</span></div>
-              <div><b>{{ selectedResult.tableCount }}</b><span>表格</span></div>
+              <div><b>{{ selectedResult.tableCount }}</b><span>{{ selectedResult.rawTableCount > selectedResult.tableCount ? `跨页合并（原 ${selectedResult.rawTableCount}）` : "表格" }}</span></div>
               <div><b>{{ (selectedResult.elapsedMs / 1000).toFixed(2) }}s</b><span>用时</span></div>
             </div>
             <textarea v-if="resultView === 'text'" :value="selectedResult.text" spellcheck="false" aria-label="识别文本" @input="updateSelectedText"></textarea>
             <div v-else class="table-results">
               <section v-for="table in selectedTables" :key="`${table.pageIndex}-${table.tableIndex}`" class="table-card">
                 <div class="table-card-title">
-                  <strong>第 {{ (table.pageIndex ?? 0) + 1 }} 页 · 表格 {{ table.tableIndex + 1 }}</strong>
+                  <strong>
+                    第 {{ (table.pageIndex ?? 0) + 1 }}<template v-if="table.endPageIndex != null && table.endPageIndex !== table.pageIndex">–{{ table.endPageIndex + 1 }}</template> 页
+                    · 表格 {{ table.tableIndex + 1 }}
+                  </strong>
                   <small>{{ table.score === null ? "结构已恢复" : `定位置信度 ${(table.score * 100).toFixed(1)}%` }}</small>
                 </div>
                 <div class="table-scroll">

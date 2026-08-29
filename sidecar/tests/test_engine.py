@@ -18,6 +18,7 @@ from engine import (  # noqa: E402
     export_text_results,
     extract_page,
     extract_table_page,
+    merge_cross_page_tables,
     parse_table_html,
     safe_table_html,
 )
@@ -159,6 +160,51 @@ class EngineSchemaTests(unittest.TestCase):
         self.assertFalse(captured["use_table_orientation_classify"])
         self.assertTrue(captured["use_layout_detection"])
         self.assertTrue(captured["use_ocr_model"])
+
+    def test_repeated_headers_merge_adjacent_single_table_pages(self) -> None:
+        def table(page_index: int, header: str, value: str) -> dict[str, object]:
+            rows = [
+                [
+                    {"row": 0, "column": 0, "rowSpan": 1, "colSpan": 1, "text": header, "box": []},
+                    {"row": 0, "column": 1, "rowSpan": 1, "colSpan": 1, "text": "金额", "box": []},
+                ],
+                [
+                    {"row": 1, "column": 0, "rowSpan": 1, "colSpan": 1, "text": value, "box": []},
+                    {"row": 1, "column": 1, "rowSpan": 1, "colSpan": 1, "text": "100", "box": []},
+                ],
+            ]
+            return {
+                "pageIndex": page_index,
+                "endPageIndex": page_index,
+                "tableIndex": 0,
+                "sourceTableCount": 1,
+                "score": 0.9,
+                "box": [],
+                "html": safe_table_html(rows),
+                "rows": rows,
+            }
+
+        merged = merge_cross_page_tables(
+            [
+                {"pageIndex": 0, "tables": [table(0, "项目", "第一项")]},
+                {"pageIndex": 1, "tables": [table(1, "项目", "第二项")]},
+                {"pageIndex": 2, "tables": [table(2, "项目", "第三项")]},
+            ]
+        )
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["endPageIndex"], 2)
+        self.assertEqual(merged[0]["sourceTableCount"], 3)
+        self.assertEqual(len(merged[0]["rows"]), 4)
+        self.assertEqual(merged[0]["rows"][-1][0]["row"], 3)
+        self.assertEqual(merged[0]["rows"][-1][0]["text"], "第三项")
+
+        not_merged = merge_cross_page_tables(
+            [
+                {"pageIndex": 0, "tables": [table(0, "项目", "第一项")]},
+                {"pageIndex": 1, "tables": [table(1, "姓名", "张三")]},
+            ]
+        )
+        self.assertEqual(len(not_merged), 2)
 
     def test_export_text_results_avoids_name_collisions(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

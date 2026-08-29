@@ -16,7 +16,9 @@ export interface OcrTableCell {
 
 export interface OcrTable {
   pageIndex: number | null;
+  endPageIndex: number | null;
   tableIndex: number;
+  sourceTableCount: number;
   score: number | null;
   box: number[];
   html: string;
@@ -40,8 +42,10 @@ export interface OcrResult {
   totalPageCount: number;
   blockCount: number;
   tableCount: number;
+  rawTableCount: number;
   elapsedMs: number;
   pages: OcrPage[];
+  tables: OcrTable[];
 }
 
 export interface SidecarEvent {

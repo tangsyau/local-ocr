@@ -57,6 +57,7 @@ class ProjectConfigTests(unittest.TestCase):
     def test_frontend_and_protocol_support_batch_and_table_results(self) -> None:
         app = (ROOT / "src" / "App.vue").read_text(encoding="utf-8")
         types = (ROOT / "src" / "lib" / "types.ts").read_text(encoding="utf-8")
+        styles = (ROOT / "src" / "styles.css").read_text(encoding="utf-8")
         sidecar = (ROOT / "sidecar" / "main.py").read_text(encoding="utf-8")
         smoke = (ROOT / "scripts" / "smoke-sidecar.py").read_text(encoding="utf-8")
         self.assertIn("multiple: true", app)
@@ -65,6 +66,8 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertIn('ocrSidecar.request("cancel"', app)
         self.assertIn("task.totalPages", app)
         self.assertIn("正在处理第", app)
+        self.assertIn("复制表格（TSV）", app)
+        self.assertIn("tableToTsv", app)
         self.assertIn("PROTOCOL_STDOUT.write", sidecar)
         self.assertIn("Sidecar did not emit OCR progress events", smoke)
         self.assertIn("表格与文字", app)
@@ -72,6 +75,7 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertIn("OcrTableCell", types)
         self.assertIn('method == "export_tables"', sidecar)
         self.assertIn("--table", smoke)
+        self.assertIn("scrollbar-gutter: stable", styles)
 
     def test_table_parser_dependencies_and_frozen_metadata_are_configured(self) -> None:
         requirements = (ROOT / "sidecar" / "requirements.txt").read_text(encoding="utf-8")
