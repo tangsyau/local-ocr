@@ -108,6 +108,7 @@ jobs:
       - name: Run source checks
         run: |
           npm run build
+          npm run test:ui
           npm run test:python
 
       - name: Freeze Python sidecar

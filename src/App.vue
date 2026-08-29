@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { ocrSidecar } from "./lib/sidecar";
+import TableResultViewer from "./components/TableResultViewer.vue";
+import { ocrSidecar, SidecarRequestError } from "./lib/sidecar";
+import { displayTables, tableToTsv } from "./lib/table-results";
 import { convertLocalFileSrc, createId, isWebkitGtk40Build, openLocalDialog } from "./lib/tauri-bridge";
-import type { ModelProfile, OcrResult, OcrTable, OcrTask, OcrTaskStatus, RecognitionMode, SidecarEvent } from "./lib/types";
+import type { DiagnosticInfo, ModelCacheStatus, ModelProfile, OcrResult, OcrTask, OcrTaskStatus, RecognitionMode, SidecarEvent } from "./lib/types";
 
 type AppPhase = "starting" | "idle" | "preparing" | "recognizing" | "paused" | "error";
 
@@ -16,10 +18,16 @@ const recognitionMode = ref<RecognitionMode>("text");
 const preparedProfile = ref<ModelProfile | null>(null);
 const preparedMode = ref<RecognitionMode | null>(null);
 const resultView = ref<"text" | "tables">("text");
+const resultFocusMode = ref(false);
+const mergeCrossPageTables = ref(true);
 const sidecarReady = ref(false);
 const queueRunning = ref(false);
 const queuePaused = ref(false);
 const stopRequested = ref(false);
+const modelCache = ref<ModelCacheStatus | null>(null);
+const modelManagerBusy = ref(false);
+const errorSummary = ref("");
+const errorDetails = ref("");
 
 const selectedTask = computed(() => tasks.value.find((task) => task.id === selectedTaskId.value) ?? null);
 const selectedResult = computed(() => selectedTask.value?.result ?? null);
@@ -35,9 +43,10 @@ const setupBusy = computed(() => phase.value === "starting" || phase.value === "
 const queuedCount = computed(() => tasks.value.filter((task) => task.status === "queued").length);
 const completedCount = computed(() => tasks.value.filter((task) => task.status === "completed").length);
 const exportableTasks = computed(() => tasks.value.filter((task) => task.status === "completed" && task.result));
-const tableTasks = computed(() => exportableTasks.value.filter((task) => (task.result?.tableCount ?? 0) > 0));
-const selectedTables = computed(
-  () => selectedResult.value?.tables ?? selectedResult.value?.pages.flatMap((page) => page.tables) ?? []
+const tableTasks = computed(() => exportableTasks.value.filter((task) => (task.result?.rawTableCount ?? 0) > 0));
+const selectedTables = computed(() => displayTables(selectedResult.value, mergeCrossPageTables.value));
+const selectedHasMergedTables = computed(
+  () => Boolean(selectedResult.value && selectedResult.value.rawTableCount > selectedResult.value.tableCount)
 );
 
 const statusLabels: Record<OcrTaskStatus, string> = {
@@ -50,16 +59,27 @@ const statusLabels: Record<OcrTaskStatus, string> = {
 };
 
 onMounted(async () => {
+  window.addEventListener("keydown", handleGlobalKeydown);
   await startSidecar();
 });
 
 onBeforeUnmount(() => {
+  window.removeEventListener("keydown", handleGlobalKeydown);
   void ocrSidecar.stop();
 });
 
 watch(selectedTaskId, () => {
   resultView.value = "text";
 });
+
+function handleGlobalKeydown(event: KeyboardEvent): void {
+  if (event.key === "Escape" && resultFocusMode.value) resultFocusMode.value = false;
+}
+
+function toggleResultFocus(): void {
+  if (!selectedResult.value) return;
+  resultFocusMode.value = !resultFocusMode.value;
+}
 
 async function chooseFiles(): Promise<void> {
   const selected = await openLocalDialog({
@@ -123,6 +143,7 @@ async function startSidecar(): Promise<boolean> {
     sidecarReady.value = true;
     phase.value = "idle";
     status.value = "识别进程已就绪，请选择模型并添加图片、PDF";
+    void refreshModelStatus();
     return true;
   } catch (error) {
     sidecarReady.value = false;
@@ -153,6 +174,7 @@ async function prepareModels(): Promise<boolean> {
     preparedMode.value = recognitionMode.value;
     phase.value = "idle";
     status.value = `${modeLabel}模式的${profileLabel}模型已载入；识别期间将禁用 Python 网络连接`;
+    await refreshModelStatus();
     return true;
   } catch (error) {
     sidecarReady.value = ocrSidecar.running;
@@ -163,6 +185,75 @@ async function prepareModels(): Promise<boolean> {
 
 function modelChanged(): void {
   if (!modelsReady.value) status.value = "识别设置已切换，开始识别时将准备对应模型";
+  void refreshModelStatus();
+}
+
+function formatBytes(value: number): string {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`;
+  if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MB`;
+  return `${(value / 1024 ** 3).toFixed(2)} GB`;
+}
+
+async function refreshModelStatus(): Promise<void> {
+  if (!ocrSidecar.running) {
+    modelCache.value = null;
+    return;
+  }
+  try {
+    modelCache.value = await ocrSidecar.request<ModelCacheStatus>(
+      "model_status",
+      { profile: modelProfile.value, mode: recognitionMode.value },
+      undefined,
+      30_000
+    );
+  } catch (error) {
+    console.warn("读取模型缓存状态失败", error);
+  }
+}
+
+async function deleteCurrentModels(): Promise<void> {
+  if (queueRunning.value || modelManagerBusy.value) return;
+  const label = recognitionMode.value === "table" ? "当前表格与文字模型" : "当前文字模型";
+  if (!window.confirm(`确定删除${label}的本地缓存吗？下次准备模型时需要重新联网下载。`)) return;
+  modelManagerBusy.value = true;
+  try {
+    const result = await ocrSidecar.request<{ removed: string[]; freedBytes: number; status: ModelCacheStatus }>(
+      "delete_models",
+      { profile: modelProfile.value, mode: recognitionMode.value },
+      undefined,
+      2 * 60_000
+    );
+    preparedProfile.value = null;
+    preparedMode.value = null;
+    modelCache.value = result.status;
+    status.value = result.removed.length
+      ? `已删除 ${result.removed.length} 个模型目录，释放 ${formatBytes(result.freedBytes)}`
+      : "当前模型没有可删除的本地缓存";
+  } catch (error) {
+    showError(error);
+  } finally {
+    modelManagerBusy.value = false;
+  }
+}
+
+async function copyDiagnostics(): Promise<void> {
+  let remote: Partial<DiagnosticInfo> = {};
+  if (ocrSidecar.running) {
+    try {
+      remote = await ocrSidecar.request<Partial<DiagnosticInfo>>("diagnostics", {}, undefined, 30_000);
+    } catch (error) {
+      console.warn("读取 sidecar 诊断信息失败", error);
+    }
+  }
+  const diagnostics: DiagnosticInfo = {
+    appVersion: "0.6.0",
+    sidecarRunning: ocrSidecar.running,
+    sidecarStderr: ocrSidecar.stderr ? "运行日志已省略，以免复制文档路径或识别相关输出" : "",
+    ...remote
+  };
+  await navigator.clipboard.writeText(JSON.stringify(diagnostics, null, 2));
+  status.value = "诊断信息已复制；其中不包含识别文字或文档内容";
 }
 
 function updateGlobalStatus(event: SidecarEvent): void {
@@ -338,7 +429,7 @@ async function exportAllTables(): Promise<void> {
         directory,
         items: tableTasks.value.map((task) => ({
           fileName: task.fileName,
-          tables: task.result?.tables ?? task.result?.pages.flatMap((page) => page.tables) ?? []
+          tables: displayTables(task.result ?? null, mergeCrossPageTables.value)
         }))
       },
       undefined,
@@ -348,24 +439,6 @@ async function exportAllTables(): Promise<void> {
   } catch (error) {
     showError(error);
   }
-}
-
-function tableToTsv(table: OcrTable): string {
-  const height = Math.max(
-    0,
-    ...table.rows.flatMap((row) => row.map((cell) => cell.row + Math.max(1, cell.rowSpan)))
-  );
-  const width = Math.max(
-    0,
-    ...table.rows.flatMap((row) => row.map((cell) => cell.column + Math.max(1, cell.colSpan)))
-  );
-  const grid = Array.from({ length: height }, () => Array.from({ length: width }, () => ""));
-  for (const row of table.rows) {
-    for (const cell of row) {
-      grid[cell.row][cell.column] = cell.text.replace(/[\t\r\n]+/g, " ").trim();
-    }
-  }
-  return grid.map((row) => row.join("\t")).join("\n");
 }
 
 async function copyCurrentResult(): Promise<void> {
@@ -388,12 +461,18 @@ function updateSelectedText(event: Event): void {
 
 function showError(error: unknown): void {
   phase.value = "error";
-  status.value = error instanceof Error ? error.message : String(error);
+  errorSummary.value = error instanceof Error ? error.message : String(error);
+  errorDetails.value = error instanceof SidecarRequestError
+    ? error.details
+    : error instanceof Error
+      ? error.stack ?? ""
+      : "";
+  status.value = errorSummary.value;
 }
 </script>
 
 <template>
-  <main class="app-shell">
+  <main :class="['app-shell', { 'result-focus-mode': resultFocusMode }]">
     <header class="topbar">
       <div><p class="eyebrow">LOCAL DOCUMENT TOOL</p><h1>本地 OCR</h1></div>
       <div class="header-actions">
@@ -432,6 +511,25 @@ function showError(error: unknown): void {
           <button class="secondary-button" :disabled="setupBusy || queueRunning" @click="prepareModels">
             {{ !sidecarReady ? "启动并准备模型" : modelsReady ? "重新载入当前模型" : "准备当前模型" }}
           </button>
+          <details class="model-manager">
+            <summary>模型管理</summary>
+            <div v-if="modelCache" class="model-status-card">
+              <div><span>当前组合</span><strong>{{ modelCache.installed ? "缓存已发现" : `${modelCache.installedCount}/${modelCache.modelCount} 个模型` }}</strong></div>
+              <div><span>占用空间</span><strong>{{ formatBytes(modelCache.sizeBytes) }}</strong></div>
+              <p class="model-path" :title="modelCache.cacheRoot">{{ modelCache.cacheRoot }}</p>
+              <ul>
+                <li v-for="model in modelCache.models" :key="model.name">
+                  <span>{{ model.name }}</span><small>{{ model.installed ? formatBytes(model.sizeBytes) : "未发现" }}</small>
+                </li>
+              </ul>
+            </div>
+            <p v-else class="model-status-empty">启动识别进程后可查看模型状态。</p>
+            <div class="model-actions">
+              <button :disabled="!sidecarReady || modelManagerBusy" @click="refreshModelStatus">刷新</button>
+              <button :disabled="!sidecarReady || modelManagerBusy || queueRunning" @click="prepareModels">校验并载入</button>
+              <button class="delete-model" :disabled="!modelCache?.sizeBytes || modelManagerBusy || queueRunning" @click="deleteCurrentModels">删除缓存</button>
+            </div>
+          </details>
         </div>
 
         <div class="step-card queue-card">
@@ -463,6 +561,10 @@ function showError(error: unknown): void {
           <div class="step-heading"><b>03</b><span>识别与导出</span></div>
           <label for="threshold"><span>最低置信度</span><strong>{{ scoreThreshold.toFixed(2) }}</strong></label>
           <input id="threshold" v-model.number="scoreThreshold" type="range" min="0" max="1" step="0.05" :disabled="queueRunning" />
+          <label v-if="recognitionMode === 'table'" class="merge-setting">
+            <input v-model="mergeCrossPageTables" type="checkbox" />
+            <span>自动合并连续分页表格</span>
+          </label>
           <button v-if="!queueRunning && !queuePaused" class="primary-button" :disabled="setupBusy || !queuedCount" @click="runQueue">开始批量识别</button>
           <div v-else class="control-grid">
             <button v-if="!queuePaused" class="secondary-button" @click="pauseQueue">暂停</button>
@@ -486,47 +588,43 @@ function showError(error: unknown): void {
 
         <article class="panel result-panel">
           <div class="panel-title">
-            <span>识别结果</span>
+            <span>{{ resultFocusMode ? fileName || "识别结果" : "识别结果" }}</span>
             <div class="result-actions">
               <div v-if="selectedResult" class="result-tabs">
                 <button :class="{ active: resultView === 'text' }" @click="resultView = 'text'">文本</button>
                 <button :class="{ active: resultView === 'tables' }" :disabled="!selectedTables.length" @click="resultView = 'tables'">表格 {{ selectedTables.length }}</button>
               </div>
               <button
+                v-if="resultView === 'tables' && selectedHasMergedTables"
+                class="text-button merge-toggle"
+                @click="mergeCrossPageTables = !mergeCrossPageTables"
+              >{{ mergeCrossPageTables ? "按页拆分" : "合并连续页" }}</button>
+              <button
                 class="text-button"
                 :disabled="resultView === 'tables' ? !selectedTables.length : !selectedResult?.text"
                 @click="copyCurrentResult"
               >{{ resultView === "tables" ? "复制表格（TSV）" : "复制全文" }}</button>
+              <button
+                class="focus-button"
+                :disabled="!selectedResult"
+                :title="resultFocusMode ? '退出专注模式（Esc）' : '专注查看识别结果'"
+                :aria-label="resultFocusMode ? '退出专注模式' : '进入专注模式'"
+                @click="toggleResultFocus"
+              >
+                <svg v-if="!resultFocusMode" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5" /></svg>
+                <svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8H3V3M16 8h5V3M8 16H3v5M16 16h5v5" /></svg>
+              </button>
             </div>
           </div>
           <div v-if="selectedResult" class="result-body">
             <div class="metrics">
               <div><b>{{ selectedResult.pageCount }} / {{ selectedResult.totalPageCount }}</b><span>已完成 / 总页数</span></div>
               <div><b>{{ selectedResult.blockCount }}</b><span>文本块</span></div>
-              <div><b>{{ selectedResult.tableCount }}</b><span>{{ selectedResult.rawTableCount > selectedResult.tableCount ? `跨页合并（原 ${selectedResult.rawTableCount}）` : "表格" }}</span></div>
+              <div><b>{{ selectedTables.length }}</b><span>{{ mergeCrossPageTables && selectedResult.rawTableCount > selectedResult.tableCount ? `跨页合并（原 ${selectedResult.rawTableCount}）` : "表格" }}</span></div>
               <div><b>{{ (selectedResult.elapsedMs / 1000).toFixed(2) }}s</b><span>用时</span></div>
             </div>
             <textarea v-if="resultView === 'text'" :value="selectedResult.text" spellcheck="false" aria-label="识别文本" @input="updateSelectedText"></textarea>
-            <div v-else class="table-results" tabindex="0" aria-label="表格识别结果，可上下滚动">
-              <section v-for="table in selectedTables" :key="`${table.pageIndex}-${table.tableIndex}`" class="table-card">
-                <div class="table-card-title">
-                  <strong>
-                    第 {{ (table.pageIndex ?? 0) + 1 }}<template v-if="table.endPageIndex != null && table.endPageIndex !== table.pageIndex">–{{ table.endPageIndex + 1 }}</template> 页
-                    · 表格 {{ table.tableIndex + 1 }}
-                  </strong>
-                  <small>{{ table.score === null ? "结构已恢复" : `定位置信度 ${(table.score * 100).toFixed(1)}%` }}</small>
-                </div>
-                <div class="table-scroll" tabindex="0" aria-label="表格内容，可左右滚动">
-                  <table>
-                    <tbody>
-                      <tr v-for="(row, rowIndex) in table.rows" :key="rowIndex">
-                        <td v-for="cell in row" :key="`${cell.row}-${cell.column}`" :rowspan="cell.rowSpan" :colspan="cell.colSpan">{{ cell.text }}</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              </section>
-            </div>
+            <TableResultViewer v-else :tables="selectedTables" />
           </div>
           <div v-else-if="selectedTask?.error" class="empty-state result-empty error-state"><p>{{ selectedTask.error }}</p></div>
           <div v-else class="empty-state result-empty"><p>选择任务后，识别结果将在这里显示并可直接校对</p></div>
@@ -534,6 +632,13 @@ function showError(error: unknown): void {
       </section>
     </section>
 
-    <footer :class="['statusbar', { error: phase === 'error' }]" :title="status"><span class="status-dot"></span><span>{{ status }}</span></footer>
+    <footer :class="['statusbar', { error: phase === 'error' }]" :title="status">
+      <span class="status-dot"></span>
+      <div class="status-content">
+        <span>{{ status }}</span>
+        <details v-if="phase === 'error' && errorDetails" class="error-details"><summary>查看技术详情</summary><pre>{{ errorDetails }}</pre></details>
+      </div>
+      <button class="diagnostic-button" @click="copyDiagnostics">复制诊断信息</button>
+    </footer>
   </main>
 </template>

@@ -103,7 +103,12 @@ def main() -> int:
         raise FileNotFoundError(f"Sidecar not found: {binary}")
 
     with tempfile.TemporaryDirectory(prefix="local-ocr-smoke-") as temp_dir:
-        request_lines = [request("smoke-ping", "ping"), request("smoke-runtime", "runtime_check")]
+        request_lines = [
+            request("smoke-ping", "ping"),
+            request("smoke-runtime", "runtime_check"),
+            request("smoke-model-status", "model_status", {"profile": "fast", "mode": "text"}),
+            request("smoke-diagnostics", "diagnostics"),
+        ]
         if args.prepare:
             image_path = Path(temp_dir) / "inference-smoke.png"
             write_smoke_png(image_path)
@@ -210,6 +215,13 @@ def main() -> int:
                 table_result = results["smoke-recognize-table"].get("result") or {}
                 if table_result.get("resultType") != "table" or "tableCount" not in table_result:
                     raise RuntimeError(f"Invalid table recognition result: {table_result}")
+
+        model_status = results["smoke-model-status"].get("result") or {}
+        if model_status.get("modelCount") != 2 or "cacheRoot" not in model_status:
+            raise RuntimeError(f"Invalid model cache status: {model_status}")
+        diagnostics = results["smoke-diagnostics"].get("result") or {}
+        if not diagnostics.get("python") or "packages" not in diagnostics:
+            raise RuntimeError(f"Invalid diagnostics result: {diagnostics}")
 
         process.stdin.close()
         return_code = process.wait(timeout=60)

@@ -7,6 +7,7 @@ import gc
 import html
 import os
 import re
+import shutil
 import sys
 import threading
 import time
@@ -33,6 +34,68 @@ MODEL_PROFILES = {
         "recognition": "PP-OCRv5_server_rec",
     },
 }
+TABLE_MODEL_NAMES = ("PicoDet_layout_1x_table", "SLANet_plus")
+
+
+def model_names(profile: str, mode: str) -> list[str]:
+    if profile not in MODEL_PROFILES:
+        raise ValueError(f"未知模型档位：{profile}")
+    if mode not in RECOGNITION_MODES:
+        raise ValueError(f"未知识别模式：{mode}")
+    model = MODEL_PROFILES[profile]
+    names = [model["detection"], model["recognition"]]
+    if mode == "table":
+        names = [*TABLE_MODEL_NAMES, *names]
+    return names
+
+
+def official_model_cache() -> Path:
+    return Path.home() / ".paddlex" / "official_models"
+
+
+def _tree_stats(path: Path) -> tuple[int, int]:
+    size = 0
+    count = 0
+    if not path.is_dir() or path.is_symlink():
+        return size, count
+    for item in path.rglob("*"):
+        if item.is_file() and not item.is_symlink():
+            try:
+                size += item.stat().st_size
+                count += 1
+            except OSError:
+                continue
+    return size, count
+
+
+def model_cache_status(
+    profile: str,
+    mode: str,
+    cache_root: Path | None = None,
+) -> dict[str, Any]:
+    root = (cache_root or official_model_cache()).expanduser().resolve()
+    entries: list[dict[str, Any]] = []
+    for name in model_names(profile, mode):
+        model_path = root / name
+        size, file_count = _tree_stats(model_path)
+        entries.append(
+            {
+                "name": name,
+                "installed": model_path.is_dir() and not model_path.is_symlink() and file_count > 0,
+                "sizeBytes": size,
+                "fileCount": file_count,
+            }
+        )
+    return {
+        "cacheRoot": str(root),
+        "profile": profile,
+        "mode": mode,
+        "installed": all(item["installed"] for item in entries),
+        "sizeBytes": sum(int(item["sizeBytes"]) for item in entries),
+        "modelCount": len(entries),
+        "installedCount": sum(bool(item["installed"]) for item in entries),
+        "models": entries,
+    }
 
 
 class TableHtmlParser(HTMLParser):
@@ -395,6 +458,33 @@ class OcrEngine:
             self._native_runtime = loader(library_name)
         return {"ok": True, "library": library_name}
 
+    def unload(self) -> None:
+        self._ocr = None
+        self._profile = None
+        self._mode = None
+        gc.collect()
+
+    def delete_model_cache(self, profile: str, mode: str) -> dict[str, Any]:
+        root = official_model_cache().expanduser().resolve()
+        before = model_cache_status(profile, mode, root)
+        self.unload()
+        removed: list[str] = []
+        for name in model_names(profile, mode):
+            target = root / name
+            if not target.exists():
+                continue
+            if target.is_symlink() or target.resolve().parent != root:
+                raise RuntimeError(f"拒绝删除非官方模型缓存目录：{target}")
+            if not target.is_dir():
+                raise RuntimeError(f"模型缓存目标不是目录：{target}")
+            shutil.rmtree(target)
+            removed.append(name)
+        return {
+            "removed": removed,
+            "freedBytes": before["sizeBytes"],
+            "status": model_cache_status(profile, mode, root),
+        }
+
     def prepare(
         self,
         profile: str = "fast",
@@ -420,10 +510,7 @@ class OcrEngine:
             progress(f"正在检查并下载{mode_label}模型……", None, "status", None)
 
         if self._ocr is not None:
-            self._ocr = None
-            self._profile = None
-            self._mode = None
-            gc.collect()
+            self.unload()
 
         # PaddleOCR may emit progress information. Keep stdout reserved for NDJSON.
         with contextlib.redirect_stdout(sys.stderr):

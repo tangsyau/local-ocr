@@ -1,16 +1,46 @@
 from __future__ import annotations
 
 import json
+import os
+import platform
 import sys
 import threading
 import traceback
+from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
-from engine import OcrEngine, export_table_results, export_text_results
+from engine import OcrEngine, export_table_results, export_text_results, model_cache_status, official_model_cache
 
 
 EMIT_LOCK = threading.Lock()
 PROTOCOL_STDOUT = sys.stdout
+
+
+def package_version(name: str) -> str | None:
+    try:
+        return version(name)
+    except PackageNotFoundError:
+        return None
+
+
+def diagnostic_info(engine: OcrEngine) -> dict[str, Any]:
+    return {
+        "platform": platform.platform(),
+        "python": sys.version.split()[0],
+        "frozen": bool(getattr(sys, "frozen", False)),
+        "executable": str(sys.executable),
+        "cacheRoot": str(official_model_cache().expanduser().resolve()),
+        "engineReady": engine.ready,
+        "profile": engine.profile,
+        "mode": engine.mode,
+        "packages": {
+            "paddlepaddle": package_version("paddlepaddle"),
+            "paddleocr": package_version("paddleocr"),
+            "paddlex": package_version("paddlex"),
+            "pyinstaller": package_version("pyinstaller"),
+        },
+        "processId": os.getpid(),
+    }
 
 
 def emit(message: dict[str, Any]) -> None:
@@ -80,12 +110,13 @@ class SidecarServer:
             )
             response = {"id": request_id, "type": "result", "result": result}
         except Exception as error:
-            traceback.print_exc(file=sys.stderr)
+            detail = traceback.format_exc(limit=24)
+            sys.stderr.write(detail)
             response = {
                 "id": request_id,
                 "type": "error",
                 "message": str(error),
-                "details": error.__class__.__name__,
+                "details": detail,
             }
         finally:
             with self._worker_lock:
@@ -130,6 +161,20 @@ class SidecarServer:
                 str(params.get("mode") or "text"),
                 progress,
             )
+        elif method == "model_status":
+            result = model_cache_status(
+                str(params.get("profile") or "fast"),
+                str(params.get("mode") or "text"),
+            )
+        elif method == "delete_models":
+            if self.active:
+                raise RuntimeError("识别期间不能删除模型")
+            result = self.engine.delete_model_cache(
+                str(params.get("profile") or "fast"),
+                str(params.get("mode") or "text"),
+            )
+        elif method == "diagnostics":
+            result = diagnostic_info(self.engine)
         elif method == "recognize":
             self.start_recognition(request_id, params)
             return True
@@ -181,13 +226,14 @@ def main() -> int:
             if not server.handle(request):
                 return 0
         except Exception as error:  # Keep the worker alive after a bad job.
-            traceback.print_exc(file=sys.stderr)
+            detail = traceback.format_exc(limit=24)
+            sys.stderr.write(detail)
             emit(
                 {
                     "id": request_id,
                     "type": "error",
                     "message": str(error),
-                    "details": error.__class__.__name__,
+                    "details": detail,
                 }
             )
     return 0

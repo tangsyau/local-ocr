@@ -19,6 +19,13 @@ interface PendingRequest {
   timer: ReturnType<typeof setTimeout> | null;
 }
 
+export class SidecarRequestError extends Error {
+  constructor(message: string, readonly details = "") {
+    super(message);
+    this.name = "SidecarRequestError";
+  }
+}
+
 class OcrSidecarClient {
   private child: SidecarChild | null = null;
   private pending = new Map<string, PendingRequest>();
@@ -27,6 +34,10 @@ class OcrSidecarClient {
 
   get running(): boolean {
     return this.child !== null;
+  }
+
+  get stderr(): string {
+    return this.stderrTail.trim();
   }
 
   async start(): Promise<void> {
@@ -167,7 +178,7 @@ class OcrSidecarClient {
     if (request.timer) clearTimeout(request.timer);
     this.pending.delete(message.id);
     if (message.type === "error") {
-      request.reject(new Error(message.message ?? "OCR sidecar 返回错误"));
+      request.reject(new SidecarRequestError(message.message ?? "OCR sidecar 返回错误", message.details ?? ""));
     } else {
       request.resolve(message.result);
     }

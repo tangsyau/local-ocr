@@ -55,6 +55,39 @@ export interface SidecarEvent {
   pageCount?: number;
 }
 
+export interface ModelCacheEntry {
+  name: string;
+  installed: boolean;
+  sizeBytes: number;
+  fileCount: number;
+}
+
+export interface ModelCacheStatus {
+  cacheRoot: string;
+  profile: ModelProfile;
+  mode: RecognitionMode;
+  installed: boolean;
+  sizeBytes: number;
+  modelCount: number;
+  installedCount: number;
+  models: ModelCacheEntry[];
+}
+
+export interface DiagnosticInfo {
+  appVersion: string;
+  sidecarRunning: boolean;
+  sidecarStderr: string;
+  platform?: string;
+  python?: string;
+  frozen?: boolean;
+  executable?: string;
+  cacheRoot?: string;
+  engineReady?: boolean;
+  profile?: string | null;
+  mode?: string | null;
+  packages?: Record<string, string | null>;
+}
+
 export type ModelProfile = "fast" | "accurate";
 export type RecognitionMode = "text" | "table";
 

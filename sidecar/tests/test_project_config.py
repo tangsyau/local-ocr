@@ -54,8 +54,32 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertIn("height: 100vh", styles)
         self.assertIn("overflow: hidden", styles)
 
+    def test_release_versions_are_consistent(self) -> None:
+        package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+        standard_config = json.loads(
+            (ROOT / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8")
+        )
+        legacy_config = json.loads(
+            (ROOT / "compat" / "webkitgtk-4.0" / "src-tauri" / "tauri.conf.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        standard_cargo = (ROOT / "src-tauri" / "Cargo.toml").read_text(encoding="utf-8")
+        legacy_cargo = (
+            ROOT / "compat" / "webkitgtk-4.0" / "src-tauri" / "Cargo.toml"
+        ).read_text(encoding="utf-8")
+
+        self.assertEqual(package["version"], "0.6.0")
+        self.assertEqual(standard_config["version"], package["version"])
+        self.assertEqual(legacy_config["package"]["version"], package["version"])
+        self.assertIn('version = "0.6.0"', standard_cargo)
+        self.assertIn('version = "0.6.0"', legacy_cargo)
+
     def test_frontend_and_protocol_support_batch_and_table_results(self) -> None:
         app = (ROOT / "src" / "App.vue").read_text(encoding="utf-8")
+        table_viewer = (ROOT / "src" / "components" / "TableResultViewer.vue").read_text(
+            encoding="utf-8"
+        )
         types = (ROOT / "src" / "lib" / "types.ts").read_text(encoding="utf-8")
         styles = (ROOT / "src" / "styles.css").read_text(encoding="utf-8")
         sidecar = (ROOT / "sidecar" / "main.py").read_text(encoding="utf-8")
@@ -79,7 +103,15 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertIn("overflow-y: scroll", styles)
         self.assertIn("overflow-x: scroll", styles)
         self.assertIn("width: max-content", styles)
-        self.assertIn('aria-label="表格识别结果，可上下滚动"', app)
+        self.assertIn('aria-label="表格识别结果，可上下滚动"', table_viewer)
+        self.assertIn('aria-label="表格顶部横向滚动条"', table_viewer)
+        self.assertIn("scrollFromTop", table_viewer)
+        self.assertIn("resultFocusMode", app)
+        self.assertIn("退出专注模式（Esc）", app)
+        self.assertIn("自动合并连续分页表格", app)
+        self.assertIn('"model_status"', app)
+        self.assertIn('"delete_models"', app)
+        self.assertIn('"diagnostics"', app)
 
     def test_table_parser_dependencies_and_frozen_metadata_are_configured(self) -> None:
         requirements = (ROOT / "sidecar" / "requirements.txt").read_text(encoding="utf-8")

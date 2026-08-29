@@ -19,6 +19,8 @@ from engine import (  # noqa: E402
     extract_page,
     extract_table_page,
     merge_cross_page_tables,
+    model_cache_status,
+    model_names,
     parse_table_html,
     safe_table_html,
 )
@@ -117,6 +119,42 @@ class EngineSchemaTests(unittest.TestCase):
     def test_model_profiles_use_mobile_and_server_pairs(self) -> None:
         self.assertEqual(MODEL_PROFILES["fast"]["detection"], "PP-OCRv5_mobile_det")
         self.assertEqual(MODEL_PROFILES["accurate"]["recognition"], "PP-OCRv5_server_rec")
+
+    def test_model_cache_status_is_limited_to_known_models(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_root = Path(temp_dir)
+            model_dir = cache_root / "PP-OCRv5_mobile_det"
+            model_dir.mkdir()
+            (model_dir / "inference.json").write_bytes(b"model")
+            status = model_cache_status("fast", "text", cache_root)
+
+        self.assertEqual(model_names("fast", "text"), ["PP-OCRv5_mobile_det", "PP-OCRv5_mobile_rec"])
+        self.assertEqual(status["installedCount"], 1)
+        self.assertFalse(status["installed"])
+        self.assertEqual(status["sizeBytes"], 5)
+
+    def test_table_model_manifest_reuses_one_structure_model(self) -> None:
+        names = model_names("fast", "table")
+        self.assertEqual(names[:2], ["PicoDet_layout_1x_table", "SLANet_plus"])
+        self.assertEqual(len(names), len(set(names)))
+
+    def test_delete_model_cache_keeps_unrelated_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_root = Path(temp_dir)
+            for name in [*model_names("fast", "text"), "unrelated-model"]:
+                model_dir = cache_root / name
+                model_dir.mkdir()
+                (model_dir / "model.bin").write_bytes(b"1234")
+            engine = OcrEngine()
+            engine._ocr = object()
+            engine._profile = "fast"
+            engine._mode = "text"
+            with patch("engine.official_model_cache", return_value=cache_root):
+                result = engine.delete_model_cache("fast", "text")
+
+            self.assertEqual(set(result["removed"]), set(model_names("fast", "text")))
+            self.assertTrue((cache_root / "unrelated-model").is_dir())
+            self.assertFalse(engine.ready)
 
     def test_table_mode_uses_lightweight_structure_pipeline(self) -> None:
         captured: dict[str, object] = {}
