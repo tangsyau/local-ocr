@@ -5,10 +5,29 @@ export interface OcrBlock {
   box: number[];
 }
 
+export interface OcrTableCell {
+  row: number;
+  column: number;
+  rowSpan: number;
+  colSpan: number;
+  text: string;
+  box: number[];
+}
+
+export interface OcrTable {
+  pageIndex: number | null;
+  tableIndex: number;
+  score: number | null;
+  box: number[];
+  html: string;
+  rows: OcrTableCell[][];
+}
+
 export interface OcrPage {
   pageIndex: number | null;
   text: string;
   blocks: OcrBlock[];
+  tables: OcrTable[];
 }
 
 export interface OcrResult {
@@ -20,6 +39,7 @@ export interface OcrResult {
   pageCount: number;
   totalPageCount: number;
   blockCount: number;
+  tableCount: number;
   elapsedMs: number;
   pages: OcrPage[];
 }
@@ -32,6 +52,7 @@ export interface SidecarEvent {
 }
 
 export type ModelProfile = "fast" | "accurate";
+export type RecognitionMode = "text" | "table";
 
 export type OcrTaskStatus =
   | "queued"
@@ -50,5 +71,5 @@ export interface OcrTask {
   totalPages?: number;
   result?: OcrResult;
   error?: string;
-  resultType: "text";
+  resultType: RecognitionMode;
 }

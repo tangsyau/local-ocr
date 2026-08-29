@@ -89,7 +89,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.paddlex/official_models
-          key: paddle-models-${{ runner.os }}-pp-ocrv5-fast-accurate-v1
+          key: paddle-models-${{ runner.os }}-pp-ocrv5-table-light-v2
 
       - name: Install frontend dependencies
         run: npm ci
@@ -117,7 +117,7 @@ jobs:
 
       - name: Verify frozen sidecar and models
         timeout-minutes: 45
-        run: npm run sidecar:smoke -- --prepare --all-profiles
+        run: npm run sidecar:smoke -- --prepare --all-profiles --table
 
       - name: Free pip download cache
         if: steps.sidecar-cache.outputs.cache-hit != 'true'
@@ -239,7 +239,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.paddlex/official_models
-          key: paddle-models-linux-pp-ocrv5-fast-accurate-v1
+          key: paddle-models-linux-pp-ocrv5-table-light-v2
 
       - name: Install frontend dependencies
         run: npm ci
@@ -267,7 +267,7 @@ jobs:
 
       - name: Verify frozen sidecar and models
         timeout-minutes: 45
-        run: npm run sidecar:smoke -- --prepare
+        run: npm run sidecar:smoke -- --prepare --table
 
       - name: Stage sidecar for Tauri 1 shell
         run: npm run sidecar:stage-webkit4

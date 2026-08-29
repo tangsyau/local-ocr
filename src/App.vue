@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ocrSidecar } from "./lib/sidecar";
 import { convertLocalFileSrc, createId, isWebkitGtk40Build, openLocalDialog } from "./lib/tauri-bridge";
-import type { ModelProfile, OcrResult, OcrTask, OcrTaskStatus, SidecarEvent } from "./lib/types";
+import type { ModelProfile, OcrResult, OcrTask, OcrTaskStatus, RecognitionMode, SidecarEvent } from "./lib/types";
 
 type AppPhase = "starting" | "idle" | "preparing" | "recognizing" | "paused" | "error";
 
@@ -12,7 +12,10 @@ const tasks = ref<OcrTask[]>([]);
 const selectedTaskId = ref("");
 const scoreThreshold = ref(0.5);
 const modelProfile = ref<ModelProfile>("fast");
+const recognitionMode = ref<RecognitionMode>("text");
 const preparedProfile = ref<ModelProfile | null>(null);
+const preparedMode = ref<RecognitionMode | null>(null);
+const resultView = ref<"text" | "tables">("text");
 const sidecarReady = ref(false);
 const queueRunning = ref(false);
 const queuePaused = ref(false);
@@ -25,16 +28,15 @@ const fileName = computed(() => selectedTask.value?.fileName ?? "");
 const extension = computed(() => fileName.value.split(".").pop()?.toLowerCase() ?? "");
 const isPdf = computed(() => extension.value === "pdf");
 const previewUrl = computed(() => selectedPath.value && !isPdf.value ? convertLocalFileSrc(selectedPath.value) : "");
-const modelsReady = computed(() => preparedProfile.value === modelProfile.value);
+const modelsReady = computed(
+  () => preparedProfile.value === modelProfile.value && preparedMode.value === recognitionMode.value
+);
 const setupBusy = computed(() => phase.value === "starting" || phase.value === "preparing");
 const queuedCount = computed(() => tasks.value.filter((task) => task.status === "queued").length);
 const completedCount = computed(() => tasks.value.filter((task) => task.status === "completed").length);
 const exportableTasks = computed(() => tasks.value.filter((task) => task.status === "completed" && task.result));
-const averageScore = computed(() => {
-  const scores = selectedResult.value?.pages.flatMap((page) => page.blocks.map((block) => block.score)) ?? [];
-  if (!scores.length) return null;
-  return scores.reduce((sum, score) => sum + score, 0) / scores.length;
-});
+const tableTasks = computed(() => exportableTasks.value.filter((task) => (task.result?.tableCount ?? 0) > 0));
+const selectedTables = computed(() => selectedResult.value?.pages.flatMap((page) => page.tables) ?? []);
 
 const statusLabels: Record<OcrTaskStatus, string> = {
   queued: "等待",
@@ -51,6 +53,10 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   void ocrSidecar.stop();
+});
+
+watch(selectedTaskId, () => {
+  resultView.value = "text";
 });
 
 async function chooseFiles(): Promise<void> {
@@ -73,7 +79,7 @@ async function chooseFiles(): Promise<void> {
       path,
       fileName: path.split(/[\\/]/).pop() ?? path,
       status: "queued",
-      resultType: "text"
+      resultType: recognitionMode.value
     });
   }
   tasks.value.push(...additions);
@@ -131,13 +137,20 @@ async function prepareModels(): Promise<boolean> {
   }
 
   phase.value = "preparing";
-  const label = modelProfile.value === "fast" ? "轻量" : "高精度";
-  status.value = `正在准备 PP-OCRv5 ${label}模型，首次运行可能需要下载……`;
+  const profileLabel = modelProfile.value === "fast" ? "轻量" : "高精度";
+  const modeLabel = recognitionMode.value === "table" ? "表格与文字" : "普通文字";
+  status.value = `正在准备${modeLabel}模式的${profileLabel}模型，首次运行可能需要下载……`;
   try {
-    await ocrSidecar.request("prepare", { profile: modelProfile.value }, updateGlobalStatus, 30 * 60_000);
+    await ocrSidecar.request(
+      "prepare",
+      { profile: modelProfile.value, mode: recognitionMode.value },
+      updateGlobalStatus,
+      30 * 60_000
+    );
     preparedProfile.value = modelProfile.value;
+    preparedMode.value = recognitionMode.value;
     phase.value = "idle";
-    status.value = `${label}模型已载入；识别期间将禁用 Python 网络连接`;
+    status.value = `${modeLabel}模式的${profileLabel}模型已载入；识别期间将禁用 Python 网络连接`;
     return true;
   } catch (error) {
     sidecarReady.value = ocrSidecar.running;
@@ -147,7 +160,7 @@ async function prepareModels(): Promise<boolean> {
 }
 
 function modelChanged(): void {
-  if (!modelsReady.value) status.value = "模型档位已切换，开始识别时将准备对应模型";
+  if (!modelsReady.value) status.value = "识别设置已切换，开始识别时将准备对应模型";
 }
 
 function updateGlobalStatus(event: SidecarEvent): void {
@@ -181,6 +194,7 @@ async function runQueue(): Promise<void> {
       const task = tasks.value.find((item) => item.status === "queued");
       if (!task) break;
       task.status = "running";
+      task.resultType = recognitionMode.value;
       task.error = undefined;
       selectedTaskId.value = task.id;
       status.value = `正在识别 ${completedCount.value + 1}/${tasks.value.length}：${task.fileName}`;
@@ -188,7 +202,7 @@ async function runQueue(): Promise<void> {
       try {
         const result = await ocrSidecar.request<OcrResult>(
           "recognize",
-          { path: task.path, scoreThreshold: scoreThreshold.value },
+          { path: task.path, scoreThreshold: scoreThreshold.value, mode: recognitionMode.value },
           (event) => updateTaskStatus(task, event),
           null
         );
@@ -202,6 +216,7 @@ async function runQueue(): Promise<void> {
         if (!ocrSidecar.running) {
           sidecarReady.value = false;
           preparedProfile.value = null;
+          preparedMode.value = null;
           throw error;
         }
       }
@@ -279,6 +294,7 @@ async function forceStopQueue(): Promise<void> {
   await ocrSidecar.forceStop();
   sidecarReady.value = false;
   preparedProfile.value = null;
+  preparedMode.value = null;
   status.value = "识别进程已强制停止；下次识别会重新启动并载入模型";
   phase.value = "idle";
 }
@@ -299,6 +315,34 @@ async function exportAllText(): Promise<void> {
       60_000
     );
     status.value = `已导出 ${response.count} 个 TXT 文件到 ${directory}`;
+  } catch (error) {
+    showError(error);
+  }
+}
+
+async function exportAllTables(): Promise<void> {
+  if (!tableTasks.value.length) return;
+  const directory = await openLocalDialog({
+    directory: true,
+    multiple: false,
+    title: "选择 XLSX 和 HTML 导出文件夹"
+  });
+  if (typeof directory !== "string") return;
+  if (!ocrSidecar.running && !(await startSidecar())) return;
+  try {
+    const response = await ocrSidecar.request<{ count: number; tableCount: number }>(
+      "export_tables",
+      {
+        directory,
+        items: tableTasks.value.map((task) => ({
+          fileName: task.fileName,
+          tables: task.result?.pages.flatMap((page) => page.tables) ?? []
+        }))
+      },
+      undefined,
+      2 * 60_000
+    );
+    status.value = `已导出 ${response.count} 份表格文件，共 ${response.tableCount} 个表格；每份包含 XLSX 和 HTML`;
   } catch (error) {
     showError(error);
   }
@@ -334,7 +378,18 @@ function showError(error: unknown): void {
     <section class="workspace">
       <aside class="sidebar">
         <div class="step-card">
-          <div class="step-heading"><b>01</b><span>选择识别模型</span></div>
+          <div class="step-heading"><b>01</b><span>选择识别方式</span></div>
+          <div class="mode-options">
+            <label :class="{ selected: recognitionMode === 'text' }">
+              <input v-model="recognitionMode" type="radio" value="text" :disabled="queueRunning" @change="modelChanged" />
+              <span><strong>普通文字</strong><small>输出连续文本与文字框</small></span>
+            </label>
+            <label :class="{ selected: recognitionMode === 'table' }">
+              <input v-model="recognitionMode" type="radio" value="table" :disabled="queueRunning" @change="modelChanged" />
+              <span><strong>表格与文字</strong><small>恢复行列和合并单元格，可导出 XLSX</small></span>
+            </label>
+          </div>
+          <p class="option-caption">文字模型档位</p>
           <div class="model-options">
             <label :class="{ selected: modelProfile === 'fast' }">
               <input v-model="modelProfile" type="radio" value="fast" :disabled="queueRunning" @change="modelChanged" />
@@ -388,6 +443,7 @@ function showError(error: unknown): void {
           </div>
           <button v-if="queueRunning" class="force-button" @click="forceStopQueue">长时间无响应？强制停止</button>
           <button class="secondary-button export-button" :disabled="!exportableTasks.length || queueRunning" @click="exportAllText">导出全部 TXT</button>
+          <button class="secondary-button export-button" :disabled="!tableTasks.length || queueRunning" @click="exportAllTables">导出表格 XLSX + HTML</button>
           <p class="pause-note">暂停和普通取消会在当前页识别结束后生效。</p>
         </div>
       </aside>
@@ -401,15 +457,41 @@ function showError(error: unknown): void {
         </article>
 
         <article class="panel result-panel">
-          <div class="panel-title"><span>识别结果</span><button class="text-button" :disabled="!selectedResult?.text" @click="copyText">复制全文</button></div>
+          <div class="panel-title">
+            <span>识别结果</span>
+            <div class="result-actions">
+              <div v-if="selectedResult" class="result-tabs">
+                <button :class="{ active: resultView === 'text' }" @click="resultView = 'text'">文本</button>
+                <button :class="{ active: resultView === 'tables' }" :disabled="!selectedTables.length" @click="resultView = 'tables'">表格 {{ selectedTables.length }}</button>
+              </div>
+              <button class="text-button" :disabled="!selectedResult?.text" @click="copyText">复制全文</button>
+            </div>
+          </div>
           <div v-if="selectedResult" class="result-body">
             <div class="metrics">
               <div><b>{{ selectedResult.pageCount }} / {{ selectedResult.totalPageCount }}</b><span>已完成 / 总页数</span></div>
               <div><b>{{ selectedResult.blockCount }}</b><span>文本块</span></div>
-              <div><b>{{ averageScore === null ? "—" : `${(averageScore * 100).toFixed(1)}%` }}</b><span>平均置信度</span></div>
+              <div><b>{{ selectedResult.tableCount }}</b><span>表格</span></div>
               <div><b>{{ (selectedResult.elapsedMs / 1000).toFixed(2) }}s</b><span>用时</span></div>
             </div>
-            <textarea :value="selectedResult.text" spellcheck="false" aria-label="识别文本" @input="updateSelectedText"></textarea>
+            <textarea v-if="resultView === 'text'" :value="selectedResult.text" spellcheck="false" aria-label="识别文本" @input="updateSelectedText"></textarea>
+            <div v-else class="table-results">
+              <section v-for="table in selectedTables" :key="`${table.pageIndex}-${table.tableIndex}`" class="table-card">
+                <div class="table-card-title">
+                  <strong>第 {{ (table.pageIndex ?? 0) + 1 }} 页 · 表格 {{ table.tableIndex + 1 }}</strong>
+                  <small>{{ table.score === null ? "结构已恢复" : `定位置信度 ${(table.score * 100).toFixed(1)}%` }}</small>
+                </div>
+                <div class="table-scroll">
+                  <table>
+                    <tbody>
+                      <tr v-for="(row, rowIndex) in table.rows" :key="rowIndex">
+                        <td v-for="cell in row" :key="`${cell.row}-${cell.column}`" :rowspan="cell.rowSpan" :colspan="cell.colSpan">{{ cell.text }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
           </div>
           <div v-else-if="selectedTask?.error" class="empty-state result-empty error-state"><p>{{ selectedTask.error }}</p></div>
           <div v-else class="empty-state result-empty"><p>选择任务后，识别结果将在这里显示并可直接校对</p></div>

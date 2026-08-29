@@ -6,7 +6,7 @@ import threading
 import traceback
 from typing import Any
 
-from engine import OcrEngine, export_text_results
+from engine import OcrEngine, export_table_results, export_text_results
 
 
 EMIT_LOCK = threading.Lock()
@@ -73,6 +73,7 @@ class SidecarServer:
             result = self.engine.recognize(
                 str(params.get("path") or ""),
                 float(params.get("scoreThreshold", 0.5)),
+                str(params.get("mode") or "text"),
                 lambda message, page, event, page_count: self._progress(
                     request_id, message, page, event, page_count
                 ),
@@ -117,13 +118,18 @@ class SidecarServer:
                 "ready": self.engine.ready,
                 "active": self.active,
                 "profile": self.engine.profile,
+                "mode": self.engine.mode,
             }
         elif method == "runtime_check":
             result = self.engine.check_native_runtime()
         elif method == "prepare":
             if self.active:
                 raise RuntimeError("识别期间不能切换模型")
-            result = self.engine.prepare(str(params.get("profile") or "fast"), progress)
+            result = self.engine.prepare(
+                str(params.get("profile") or "fast"),
+                str(params.get("mode") or "text"),
+                progress,
+            )
         elif method == "recognize":
             self.start_recognition(request_id, params)
             return True
@@ -140,6 +146,10 @@ class SidecarServer:
             result = {"active": self.active, "cancelRequested": self.active}
         elif method == "export_texts":
             result = export_text_results(str(params.get("directory") or ""), list(params.get("items") or []))
+        elif method == "export_tables":
+            result = export_table_results(
+                str(params.get("directory") or ""), list(params.get("items") or [])
+            )
         elif method == "shutdown":
             self.shutdown()
             emit({"id": request_id, "type": "result", "result": {"ok": True}})

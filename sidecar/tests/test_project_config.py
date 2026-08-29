@@ -54,7 +54,7 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertIn("height: 100vh", styles)
         self.assertIn("overflow: hidden", styles)
 
-    def test_frontend_and_protocol_reserve_batch_result_types(self) -> None:
+    def test_frontend_and_protocol_support_batch_and_table_results(self) -> None:
         app = (ROOT / "src" / "App.vue").read_text(encoding="utf-8")
         types = (ROOT / "src" / "lib" / "types.ts").read_text(encoding="utf-8")
         sidecar = (ROOT / "sidecar" / "main.py").read_text(encoding="utf-8")
@@ -67,6 +67,24 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertIn("正在处理第", app)
         self.assertIn("PROTOCOL_STDOUT.write", sidecar)
         self.assertIn("Sidecar did not emit OCR progress events", smoke)
+        self.assertIn("表格与文字", app)
+        self.assertIn('"export_tables",', app)
+        self.assertIn("OcrTableCell", types)
+        self.assertIn('method == "export_tables"', sidecar)
+        self.assertIn("--table", smoke)
+
+    def test_table_parser_dependencies_and_frozen_metadata_are_configured(self) -> None:
+        requirements = (ROOT / "sidecar" / "requirements.txt").read_text(encoding="utf-8")
+        build_script = (ROOT / "scripts" / "build-sidecar.py").read_text(encoding="utf-8")
+        workflow = (ROOT / ".github" / "workflows" / "build-desktop.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("paddleocr[doc-parser]==3.7.0", requirements)
+        self.assertIn("openpyxl", requirements)
+        self.assertIn('"doc-parser"', build_script)
+        self.assertIn('"ocr"', build_script)
+        self.assertIn("paddle_extra_metadata()", build_script)
+        self.assertIn("--prepare --all-profiles --table", workflow)
 
     def test_webkitgtk_4_0_compatibility_shell_is_isolated_from_tauri_2(self) -> None:
         standard = json.loads(
@@ -125,6 +143,7 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertNotIn("--bundles deb", workflow)
         legacy_job = workflow.split("build-linux-webkitgtk-4:", 1)[1]
         self.assertIn("sidecar:smoke -- --prepare", legacy_job)
+        self.assertIn("--table", legacy_job)
         self.assertNotIn("--all-profiles", legacy_job)
         self.assertNotIn("actions/setup-python", legacy_job)
         self.assertIn(

@@ -5,6 +5,7 @@
 ## 当前功能
 
 - 批量选择 PNG、JPEG、WebP、BMP、TIFF 或 PDF，并按队列顺序识别；
+- 在“普通文字”和“表格与文字”两种模式之间切换；表格模式使用 TableRecognitionPipelineV2、PicoDet 表格版面检测和 SLANet_plus 轻量结构模型；
 - 在 PP-OCRv5 轻量与高精度检测/识别模型之间切换，模型按需联网下载；
 - 模型常驻 Python sidecar，同一档位的连续任务不重复初始化；
 - 支持在当前页结束后暂停、继续或取消队列，并提供无响应时强制停止；
@@ -12,16 +13,17 @@
 - 识别阶段临时阻断 Python socket 连接；
 - 逐页返回文字、置信度、文本框坐标和纯文本；
 - 每个文件独立保留结果，可校对、复制并批量导出同名 TXT；
+- 表格结果按页预览行列及合并单元格，并可为每个源文件导出 XLSX 和安全的静态 HTML；
 - Windows 发布版将 Tauri 主程序设为 GUI 子系统，并隐藏 sidecar 控制台，同时保留管道通信；
 - Windows 和 Linux 启动时默认最大化；较小屏幕仍可滚动和手动调整窗口；
 - Linux 同时提供 WebKitGTK 4.1 常规版和 WebKitGTK 4.0 兼容版，两个版本共用 OCR 功能；
 - NDJSON 标准输入/输出通信，不启动本地 HTTP 端口。
 
-当前结果类型预留了 `text`、`table` 和 `document`，但 0.4.5 只实现普通文字 OCR；图片表格不会恢复为行列和合并单元格结构。
+0.5.0 的表格功能属于轻量档：适合常见有线表格和较规整的无线表格。它会恢复行列、单元格文字以及模型判断出的 `rowspan`/`colspan`，但不会还原原始字体、公式、单元格颜色、精确列宽或 Excel 计算逻辑；倾斜严重、跨页、密集小字和拍照畸变表格仍可能需要人工校对。
 
 ## 隐私边界
 
-`prepare` 阶段允许 PaddleOCR 下载所选档位的官方模型。`recognize` 阶段只向 sidecar 传递本地路径，并使用 `block_python_network()` 阻止 Python 网络连接。暂停期间仍处于同一次本地识别任务中。项目不包含文档上传、云端 OCR、遥测或崩溃报告代码。
+`prepare` 阶段允许 PaddleOCR 下载所选档位的官方模型；表格模式首次准备还会下载版面检测和表格结构模型，因此耗时和磁盘占用高于普通文字模式。`recognize` 阶段只向 sidecar 传递本地路径，并使用 `block_python_network()` 阻止 Python 网络连接。暂停期间仍处于同一次本地识别任务中。项目不包含文档上传、云端 OCR、遥测或崩溃报告代码。
 
 这个 Python 网络守卫不是操作系统级沙箱。若用于需要形式化合规保证的环境，下一步应把模型下载器拆为独立进程，并在操作系统层限制 OCR worker 的网络权限。
 
@@ -115,13 +117,13 @@ npm run tauri build
 工作流也会在推送 `v*` 标签时自动运行，例如：
 
 ```bash
-git tag v0.4.5
-git push origin v0.4.5
+git tag v0.5.0
+git push origin v0.5.0
 ```
 
 构建产物作为 Actions Artifact 保存 14 天。当前产物没有代码签名，因此 Windows 首次运行可能显示 SmartScreen 警告。正式公开发布前还应修改 `src-tauri/tauri.conf.json` 中的 `com.example.localocr` 标识，并配置 Windows 代码签名。
 
-工作流对冻结后的 sidecar 和 PP-OCRv5 模型分别使用内容寻址缓存：源码和依赖未变化时会跳过 PaddleOCR/PyInstaller 的重复安装与冻结。常规 Windows/Linux 任务验证轻量和高精度两档；4.0 兼容任务为缩短首次构建时间，只重复验证轻量档及真实推理。Linux 两个版本都只生成 AppImage，DEB、RPM 暂不构建。单个任务总超时为 240 分钟，同时为依赖安装、sidecar 冻结、模型验证和 Tauri 打包设置了更短的分阶段超时。
+工作流对冻结后的 sidecar 和 PaddleOCR 模型分别使用内容寻址缓存：源码和依赖未变化时会跳过 PaddleOCR/PyInstaller 的重复安装与冻结。常规 Windows/Linux 任务验证普通文字的轻量、高精度两档，再验证一次轻量表格流水线；4.0 兼容任务为缩短首次构建时间，只验证普通文字轻量档和轻量表格流水线。Linux 两个版本都只生成 AppImage，DEB、RPM 暂不构建。单个任务总超时为 240 分钟，同时为依赖安装、sidecar 冻结、模型验证和 Tauri 打包设置了更短的分阶段超时。首次加入表格模型后的构建会比 0.4.x 更久，后续命中缓存会明显缩短。
 
 4.0 任务运行在 Debian 10 Buster（glibc 2.28）容器内，并使用 `archive.debian.org` 中的归档软件源。任务不调用 `actions/setup-python`，因为后者可能把为较新 glibc 构建的宿主 Python 工具缓存挂载进旧容器，先后造成 `pip ENOENT` 或 `GLIBC_2.34 not found`。兼容任务使用提交哈希固定的 `setup-uv` v10.0.1，下载可移植的 Python 3.11.15，在仓库内创建 `.venv` 后才安装及冻结 sidecar；冻结 sidecar、uv 下载和 PaddleOCR 模型均有独立缓存。setup-uv 从 v8 起不再发布 `@v8`、`@v9` 形式的浮动主版本标签，因此不要把固定哈希改回 `astral-sh/setup-uv@v9`。
 
@@ -140,9 +142,9 @@ AppImage 仍然受 Linux 内核、glibc、显卡驱动及桌面环境等因素�
 3. 执行 `paddle.utils.run_check()`；
 4. 使用 PyInstaller 冻结 sidecar；
 5. 启动冻结后的 sidecar；
-6. 依次下载并载入 PP-OCRv5 轻量和高精度模型；
+6. 依次下载并载入 PP-OCRv5 轻量和高精度模型，并载入 SLANet_plus 轻量表格流水线；
 7. 按文件名加载 Paddle MKL 原生运行库，确认冻结包的动态库搜索路径有效；
-8. 生成一张本地测试 PNG，并让冻结后的 sidecar 用两个模型档位各执行一次 `recognize` 推理；
+8. 生成一张本地表格测试 PNG，让冻结后的 sidecar 用两个文字模型档位及轻量表格模式执行真实 `recognize` 推理；
 9. 确认 NDJSON 的 `ping`、`prepare`、`recognize` 和 `shutdown` 均正常返回，并验证识别过程中确实收到逐页 `progress` 事件；
 10. 最后才执行 Tauri 安装包构建。
 
@@ -150,7 +152,7 @@ AppImage 仍然受 Linux 内核、glibc、显卡驱动及桌面环境等因素�
 
 ### PaddleX OCR 冻结说明
 
-PaddleX 会在创建 OCR pipeline 前通过 `importlib.metadata` 检查 `ocr-core` 依赖。仅把 Python 模块交给 PyInstaller 还不够，冻结后的 sidecar 也必须包含这些包的 `.dist-info` 元数据。本项目已显式锁定 `paddlex[ocr-core]`，并由 `scripts/build-sidecar.py` 复制 PaddleX、OpenCV、PyPDFium2、Shapely 等 OCR 依赖的分发元数据；不要删掉这些 `--copy-metadata` 参数。
+PaddleX 会在创建 OCR pipeline 前通过 `importlib.metadata` 检查 `ocr-core`/`ocr` 依赖。仅把 Python 模块交给 PyInstaller 还不够，冻结后的 sidecar 也必须包含这些包的 `.dist-info` 元数据。本项目显式安装 `paddleocr[doc-parser]`，构建脚本会读取 PaddleOCR/PaddleX 的可选依赖声明并复制文字和表格流水线所需的分发元数据；不要删掉这段动态 `--copy-metadata` 处理。
 
 Paddle 的 CPU predictor 还会在运行时按文件名动态载入 MKL。`--collect-all paddle` 会保留 `paddle/libs` 中的原文件，但单文件应用的系统动态库搜索路径只包含解压目录顶层，因此构建脚本还会把 `mklml.dll` 及其 `libiomp5md.dll` 依赖（Windows），或 `libmklml_intel.so`（Linux）加入顶层。Windows 使用 PyInstaller `--hide-console hide-early` 隐藏 sidecar 自己创建的控制台，但仍保留 console bootloader 和标准管道；不要改成 `--noconsole`。烟雾测试使用 UTF-8 原始字节输出 stderr，避免 Windows runner 的 CP1252 控制台掩盖真实错误。
 
@@ -174,8 +176,8 @@ python sidecar/main.py
 
 ```json
 {"id":"1","method":"ping","params":{}}
-{"id":"2","method":"prepare","params":{"profile":"fast"}}
-{"id":"3","method":"recognize","params":{"path":"/absolute/path/to/image.png","scoreThreshold":0.5}}
+{"id":"2","method":"prepare","params":{"profile":"fast","mode":"text"}}
+{"id":"3","method":"recognize","params":{"path":"/absolute/path/to/image.png","scoreThreshold":0.5,"mode":"text"}}
 {"id":"4","method":"pause","params":{}}
 {"id":"5","method":"resume","params":{}}
 {"id":"6","method":"cancel","params":{}}
@@ -204,10 +206,11 @@ scripts/stage-webkit4-sidecar.py  将同平台 sidecar 放入兼容壳
 
 ## 下一阶段建议
 
-1. 增加实验性表格识别结果和 HTML/XLSX 导出；
-2. 在图片上叠加 `polygon` 文本框并联动文字块；
-3. 增加 JSON、Markdown 导出和关闭程序后的队列恢复；
-4. 将模型下载器拆成独立、可联网的 sidecar；
-5. 增加自定义模型目录与模型版本清单；
-6. 在现有 Windows/Linux 流水线上增加 GitHub Release 发布，并另行验证 macOS arm64；
-7. 分开提供 CPU 版与 NVIDIA GPU 版。
+1. 为表格单元格增加点击校对和原图区域联动；
+2. 增加跨页表格合并，并提供更高精度的表格模型档位；
+3. 在图片上叠加 `polygon` 文本框并联动文字块；
+4. 增加 JSON、Markdown 导出和关闭程序后的队列恢复；
+5. 将模型下载器拆成独立、可联网的 sidecar；
+6. 增加自定义模型目录与模型版本清单；
+7. 在现有 Windows/Linux 流水线上增加 GitHub Release 发布，并另行验证 macOS arm64；
+8. 分开提供 CPU 版与 NVIDIA GPU 版。

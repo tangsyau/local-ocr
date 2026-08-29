@@ -3,10 +3,12 @@ from __future__ import annotations
 import contextlib
 import ctypes
 import gc
+import html
 import os
 import sys
 import threading
 import time
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Callable
 
@@ -15,6 +17,7 @@ from network_guard import block_python_network
 
 ProgressCallback = Callable[[str, int | None, str, int | None], None]
 SUPPORTED_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".pdf"}
+RECOGNITION_MODES = {"text", "table"}
 MODEL_PROFILES = {
     "fast": {
         "label": "PP-OCRv5 轻量",
@@ -29,6 +32,96 @@ MODEL_PROFILES = {
 }
 
 
+class TableHtmlParser(HTMLParser):
+    """Convert model-generated table HTML to a safe, renderable cell grid."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.rows: list[list[dict[str, Any]]] = []
+        self._row = -1
+        self._column = 0
+        self._occupied: set[tuple[int, int]] = set()
+        self._cell: dict[str, Any] | None = None
+        self._text_parts: list[str] = []
+
+    @staticmethod
+    def _span(attributes: dict[str, str | None], name: str) -> int:
+        try:
+            return max(1, min(int(attributes.get(name) or 1), 100))
+        except (TypeError, ValueError):
+            return 1
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        name = tag.lower()
+        if name == "tr":
+            self._row += 1
+            self._column = 0
+            self.rows.append([])
+            return
+        if name not in {"td", "th"} or self._row < 0 or self._cell is not None:
+            return
+
+        attributes = dict(attrs)
+        while (self._row, self._column) in self._occupied:
+            self._column += 1
+        row_span = self._span(attributes, "rowspan")
+        col_span = self._span(attributes, "colspan")
+        self._cell = {
+            "row": self._row,
+            "column": self._column,
+            "rowSpan": row_span,
+            "colSpan": col_span,
+            "text": "",
+            "box": [],
+        }
+        self._text_parts = []
+        for row in range(self._row, self._row + row_span):
+            for column in range(self._column, self._column + col_span):
+                self._occupied.add((row, column))
+
+    def handle_data(self, data: str) -> None:
+        if self._cell is not None:
+            self._text_parts.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() not in {"td", "th"} or self._cell is None:
+            return
+        self._cell["text"] = " ".join("".join(self._text_parts).split())
+        self.rows[self._row].append(self._cell)
+        self._column = int(self._cell["column"]) + int(self._cell["colSpan"])
+        self._cell = None
+        self._text_parts = []
+
+
+def parse_table_html(value: str, cell_boxes: list[Any] | None = None) -> list[list[dict[str, Any]]]:
+    parser = TableHtmlParser()
+    parser.feed(value or "")
+    parser.close()
+    boxes = list(cell_boxes or [])
+    cells = [cell for row in parser.rows for cell in row]
+    for index, cell in enumerate(cells):
+        if index < len(boxes):
+            cell["box"] = _jsonable(boxes[index])
+    return [row for row in parser.rows if row]
+
+
+def safe_table_html(rows: list[list[dict[str, Any]]]) -> str:
+    body: list[str] = []
+    for row in rows:
+        cells: list[str] = []
+        for cell in row:
+            row_span = max(1, int(cell.get("rowSpan") or 1))
+            col_span = max(1, int(cell.get("colSpan") or 1))
+            attributes = ""
+            if row_span > 1:
+                attributes += f' rowspan="{row_span}"'
+            if col_span > 1:
+                attributes += f' colspan="{col_span}"'
+            cells.append(f"<td{attributes}>{html.escape(str(cell.get('text') or ''))}</td>")
+        body.append(f"<tr>{''.join(cells)}</tr>")
+    return f"<table><tbody>{''.join(body)}</tbody></table>"
+
+
 def _jsonable(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
@@ -41,11 +134,7 @@ def _jsonable(value: Any) -> Any:
     return str(value)
 
 
-def extract_page(result: Any) -> dict[str, Any]:
-    """Convert PaddleOCR 3.x's Result.json payload into the stable app schema."""
-
-    raw = _jsonable(result.json)
-    payload = raw.get("res", raw) if isinstance(raw, dict) else {}
+def extract_ocr_payload(payload: dict[str, Any], page_index: int | None = None) -> dict[str, Any]:
     texts = list(payload.get("rec_texts") or [])
     scores = list(payload.get("rec_scores") or [])
     polygons = list(payload.get("rec_polys") or [])
@@ -66,10 +155,74 @@ def extract_page(result: Any) -> dict[str, Any]:
         )
 
     return {
-        "pageIndex": payload.get("page_index"),
+        "pageIndex": payload.get("page_index", page_index),
         "text": "\n".join(block["text"] for block in blocks),
         "blocks": blocks,
+        "tables": [],
     }
+
+
+def extract_page(result: Any) -> dict[str, Any]:
+    """Convert PaddleOCR 3.x's Result.json payload into the stable app schema."""
+
+    raw = _jsonable(result.json)
+    payload = raw.get("res", raw) if isinstance(raw, dict) else {}
+    return extract_ocr_payload(payload)
+
+
+def _table_box(cell_boxes: list[Any]) -> list[float]:
+    points: list[tuple[float, float]] = []
+    for box in cell_boxes:
+        values = _jsonable(box)
+        if not isinstance(values, list):
+            continue
+        if values and isinstance(values[0], list):
+            for point in values:
+                if isinstance(point, list) and len(point) >= 2:
+                    points.append((float(point[0]), float(point[1])))
+        else:
+            numbers = [float(item) for item in values]
+            points.extend(zip(numbers[0::2], numbers[1::2]))
+    if not points:
+        return []
+    xs = [point[0] for point in points]
+    ys = [point[1] for point in points]
+    return [min(xs), min(ys), max(xs), max(ys)]
+
+
+def extract_table_page(result: Any) -> dict[str, Any]:
+    """Convert TableRecognitionPipelineV2 output to text plus safe table grids."""
+
+    raw = _jsonable(result.json)
+    payload = raw.get("res", raw) if isinstance(raw, dict) else {}
+    page_index = payload.get("page_index")
+    overall_ocr = payload.get("overall_ocr_res") or {}
+    page = extract_ocr_payload(overall_ocr, page_index)
+    page["pageIndex"] = page_index
+
+    layout_tables = [
+        item
+        for item in (payload.get("layout_det_res") or {}).get("boxes", [])
+        if str(item.get("label") or "").lower() == "table"
+    ]
+    tables: list[dict[str, Any]] = []
+    for index, table_payload in enumerate(payload.get("table_res_list") or []):
+        cell_boxes = list(table_payload.get("cell_box_list") or [])
+        rows = parse_table_html(str(table_payload.get("pred_html") or ""), cell_boxes)
+        layout = layout_tables[index] if index < len(layout_tables) else {}
+        box = _table_box(cell_boxes) or list(layout.get("coordinate") or [])
+        tables.append(
+            {
+                "pageIndex": page_index,
+                "tableIndex": index,
+                "score": float(layout["score"]) if layout.get("score") is not None else None,
+                "box": box,
+                "html": safe_table_html(rows),
+                "rows": rows,
+            }
+        )
+    page["tables"] = tables
+    return page
 
 
 def document_page_count(path: Path) -> int:
@@ -88,6 +241,7 @@ class OcrEngine:
     def __init__(self) -> None:
         self._ocr: Any | None = None
         self._profile: str | None = None
+        self._mode: str | None = None
         self._native_runtime: Any | None = None
         self._pause_requested = threading.Event()
         self._cancel_requested = threading.Event()
@@ -99,6 +253,10 @@ class OcrEngine:
     @property
     def profile(self) -> str | None:
         return self._profile
+
+    @property
+    def mode(self) -> str | None:
+        return self._mode
 
     def check_native_runtime(self) -> dict[str, Any]:
         """Verify that Paddle's lazily loaded CPU runtime is discoverable."""
@@ -118,39 +276,78 @@ class OcrEngine:
             self._native_runtime = loader(library_name)
         return {"ok": True, "library": library_name}
 
-    def prepare(self, profile: str = "fast", progress: ProgressCallback | None = None) -> dict[str, Any]:
+    def prepare(
+        self,
+        profile: str = "fast",
+        mode: str = "text",
+        progress: ProgressCallback | None = None,
+    ) -> dict[str, Any]:
         if profile not in MODEL_PROFILES:
             raise ValueError(f"未知模型档位：{profile}")
+        if mode not in RECOGNITION_MODES:
+            raise ValueError(f"未知识别模式：{mode}")
         model = MODEL_PROFILES[profile]
-        if self._ocr is not None and self._profile == profile:
-            return {"ready": True, "downloaded": False, "model": model["label"], "profile": profile}
+        mode_label = "轻量表格与文字" if mode == "table" else model["label"]
+        if self._ocr is not None and self._profile == profile and self._mode == mode:
+            return {
+                "ready": True,
+                "downloaded": False,
+                "model": mode_label,
+                "profile": profile,
+                "mode": mode,
+            }
 
         if progress:
-            progress(f"正在检查并下载{model['label']}模型……", None, "status", None)
+            progress(f"正在检查并下载{mode_label}模型……", None, "status", None)
 
         if self._ocr is not None:
             self._ocr = None
             self._profile = None
+            self._mode = None
             gc.collect()
 
         # PaddleOCR may emit progress information. Keep stdout reserved for NDJSON.
         with contextlib.redirect_stdout(sys.stderr):
-            from paddleocr import PaddleOCR
+            if mode == "table":
+                from paddleocr import TableRecognitionPipelineV2
 
-            self._ocr = PaddleOCR(
-                text_detection_model_name=model["detection"],
-                text_recognition_model_name=model["recognition"],
-                use_doc_orientation_classify=False,
-                use_doc_unwarping=False,
-                use_textline_orientation=False,
-                device="cpu",
-                cpu_threads=max(1, min(os.cpu_count() or 4, 8)),
-            )
+                self._ocr = TableRecognitionPipelineV2(
+                    layout_detection_model_name="PicoDet_layout_1x_table",
+                    wired_table_structure_recognition_model_name="SLANet_plus",
+                    wireless_table_structure_recognition_model_name="SLANet_plus",
+                    text_detection_model_name=model["detection"],
+                    text_recognition_model_name=model["recognition"],
+                    use_doc_orientation_classify=False,
+                    use_doc_unwarping=False,
+                    use_layout_detection=True,
+                    use_ocr_model=True,
+                    device="cpu",
+                    cpu_threads=max(1, min(os.cpu_count() or 4, 8)),
+                )
+            else:
+                from paddleocr import PaddleOCR
+
+                self._ocr = PaddleOCR(
+                    text_detection_model_name=model["detection"],
+                    text_recognition_model_name=model["recognition"],
+                    use_doc_orientation_classify=False,
+                    use_doc_unwarping=False,
+                    use_textline_orientation=False,
+                    device="cpu",
+                    cpu_threads=max(1, min(os.cpu_count() or 4, 8)),
+                )
             self._profile = profile
+            self._mode = mode
 
         if progress:
-            progress(f"{model['label']}模型已下载并载入本机内存", None, "status", None)
-        return {"ready": True, "downloaded": True, "model": model["label"], "profile": profile}
+            progress(f"{mode_label}模型已下载并载入本机内存", None, "status", None)
+        return {
+            "ready": True,
+            "downloaded": True,
+            "model": mode_label,
+            "profile": profile,
+            "mode": mode,
+        }
 
     def reset_job_control(self) -> None:
         self._pause_requested.clear()
@@ -180,6 +377,7 @@ class OcrEngine:
         self,
         path_value: str,
         score_threshold: float = 0.5,
+        mode: str = "text",
         progress: ProgressCallback | None = None,
     ) -> dict[str, Any]:
         path = Path(path_value).expanduser().resolve(strict=True)
@@ -191,28 +389,41 @@ class OcrEngine:
             raise ValueError("最低置信度必须在 0 到 1 之间")
         if self._ocr is None:
             raise RuntimeError("模型尚未准备，请先执行 prepare")
+        if mode != self._mode:
+            raise RuntimeError("识别模式与已载入模型不一致，请重新准备模型")
 
         started = time.perf_counter()
         pages: list[dict[str, Any]] = []
         total_page_count = document_page_count(path)
         if progress:
             if path.suffix.lower() == ".pdf":
-                message = f"已读取 PDF，共 {total_page_count} 页；已封锁 Python 网络连接，开始识别……"
+                prefix = "开始定位表格、识别文字并恢复结构" if mode == "table" else "开始识别"
+                message = f"已读取 PDF，共 {total_page_count} 页；已封锁 Python 网络连接，{prefix}……"
             else:
-                message = "已封锁 Python 网络连接，开始读取本地图片……"
+                message = (
+                    "已封锁 Python 网络连接，开始定位表格、识别文字并恢复结构……"
+                    if mode == "table"
+                    else "已封锁 Python 网络连接，开始读取本地图片……"
+                )
             progress(message, 0, "status", total_page_count)
 
         with block_python_network(), contextlib.redirect_stdout(sys.stderr):
             results = self._ocr.predict_iter(
-                str(path),
+                input=str(path),
                 text_rec_score_thresh=score_threshold,
             )
             for page_number, result in enumerate(results, start=1):
-                pages.append(extract_page(result))
+                page = extract_table_page(result) if mode == "table" else extract_page(result)
+                pages.append(page)
                 if progress:
                     percent = round(page_number / total_page_count * 100)
+                    detail = (
+                        f"，识别到 {len(page['tables'])} 个表格"
+                        if mode == "table"
+                        else ""
+                    )
                     progress(
-                        f"已完成第 {page_number}/{total_page_count} 页（{percent}%）",
+                        f"已完成第 {page_number}/{total_page_count} 页（{percent}%）{detail}",
                         page_number,
                         "progress",
                         total_page_count,
@@ -227,12 +438,13 @@ class OcrEngine:
         return {
             "path": str(path),
             "profile": self._profile,
-            "resultType": "text",
+            "resultType": mode,
             "cancelled": self._cancel_requested.is_set(),
             "text": "\n\n".join(page["text"] for page in pages if page["text"]),
             "pageCount": len(pages),
             "totalPageCount": total_page_count,
             "blockCount": sum(len(page["blocks"]) for page in pages),
+            "tableCount": sum(len(page["tables"]) for page in pages),
             "elapsedMs": elapsed_ms,
             "pages": pages,
         }
@@ -257,3 +469,107 @@ def export_text_results(directory_value: str, items: list[dict[str, Any]]) -> di
         reserved.add(candidate)
         exported.append({"source": source_name, "path": str(candidate)})
     return {"count": len(exported), "files": exported}
+
+
+def _available_path(directory: Path, name: str, reserved: set[Path]) -> Path:
+    requested = Path(name)
+    candidate = directory / requested.name
+    index = 2
+    while candidate.exists() or candidate in reserved:
+        candidate = directory / f"{requested.stem} ({index}){requested.suffix}"
+        index += 1
+    reserved.add(candidate)
+    return candidate
+
+
+def export_table_results(directory_value: str, items: list[dict[str, Any]]) -> dict[str, Any]:
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+
+    directory = Path(directory_value).expanduser().resolve(strict=True)
+    if not directory.is_dir():
+        raise ValueError("导出位置不是文件夹")
+
+    exported: list[dict[str, Any]] = []
+    reserved: set[Path] = set()
+    for item in items:
+        tables = list(item.get("tables") or [])
+        if not tables:
+            continue
+        source_name = Path(str(item.get("fileName") or "表格识别结果")).name
+        stem = Path(source_name).stem.strip() or "表格识别结果"
+        xlsx_path = _available_path(directory, f"{stem}.xlsx", reserved)
+        html_path = _available_path(directory, f"{stem}.tables.html", reserved)
+
+        workbook = Workbook()
+        workbook.remove(workbook.active)
+        html_sections: list[str] = []
+        for ordinal, table in enumerate(tables, start=1):
+            page_number = int(table.get("pageIndex") or 0) + 1
+            table_number = int(table.get("tableIndex") or (ordinal - 1)) + 1
+            base_title = f"P{page_number}-T{table_number}"[:31]
+            title = base_title
+            suffix = 2
+            while title in workbook.sheetnames:
+                marker = f"-{suffix}"
+                title = f"{base_title[:31 - len(marker)]}{marker}"
+                suffix += 1
+            sheet = workbook.create_sheet(title)
+
+            rows = list(table.get("rows") or [])
+            for row in rows:
+                for cell in row:
+                    row_index = int(cell.get("row") or 0) + 1
+                    column_index = int(cell.get("column") or 0) + 1
+                    row_span = max(1, int(cell.get("rowSpan") or 1))
+                    col_span = max(1, int(cell.get("colSpan") or 1))
+                    target = sheet.cell(row=row_index, column=column_index)
+                    target.value = str(cell.get("text") or "")
+                    target.alignment = Alignment(vertical="center", wrap_text=True)
+                    if row_index == 1:
+                        target.font = Font(bold=True)
+                        target.fill = PatternFill("solid", fgColor="E7EFE9")
+                    if row_span > 1 or col_span > 1:
+                        sheet.merge_cells(
+                            start_row=row_index,
+                            start_column=column_index,
+                            end_row=row_index + row_span - 1,
+                            end_column=column_index + col_span - 1,
+                        )
+                    width = min(max(len(str(target.value)) + 2, 10), 40)
+                    column_letter = target.column_letter
+                    sheet.column_dimensions[column_letter].width = max(
+                        sheet.column_dimensions[column_letter].width or 0,
+                        width / col_span,
+                    )
+
+            table_html = safe_table_html(rows)
+            html_sections.append(
+                f"<section><h2>第 {page_number} 页 · 表格 {table_number}</h2>{table_html}</section>"
+            )
+
+        workbook.save(xlsx_path)
+        html_document = (
+            "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
+            f"<title>{html.escape(stem)} 表格识别结果</title>"
+            "<style>body{font-family:sans-serif;margin:24px;color:#18201d}"
+            "section{margin-bottom:32px}table{border-collapse:collapse;max-width:100%;}"
+            "td{border:1px solid #68716b;padding:6px 9px;vertical-align:top}"
+            "h1{font-size:22px}h2{font-size:16px}</style></head><body>"
+            f"<h1>{html.escape(source_name)}</h1>{''.join(html_sections)}</body></html>"
+        )
+        html_path.write_text(html_document, encoding="utf-8")
+        exported.append(
+            {
+                "source": source_name,
+                "tableCount": len(tables),
+                "xlsx": str(xlsx_path),
+                "html": str(html_path),
+            }
+        )
+
+    return {
+        "count": len(exported),
+        "tableCount": sum(int(item["tableCount"]) for item in exported),
+        "files": exported,
+    }

@@ -20,6 +20,7 @@ import main as sidecar_main  # noqa: E402
 class FakeEngine:
     ready = True
     profile = "fast"
+    mode = "text"
 
     def __init__(self) -> None:
         self.started = threading.Event()
@@ -31,7 +32,7 @@ class FakeEngine:
         self.pause_called = False
         self.cancel_called = False
 
-    def recognize(self, path: str, score: float, progress: Any) -> dict[str, Any]:
+    def recognize(self, path: str, score: float, mode: str, progress: Any) -> dict[str, Any]:
         self.started.set()
         progress("已完成第 1/3 页（33%）", 1, "progress", 3)
         self.release.wait(timeout=2)
@@ -44,6 +45,7 @@ class FakeEngine:
             "pageCount": 1,
             "totalPageCount": 1,
             "blockCount": 1,
+            "tableCount": 0,
             "elapsedMs": 1,
             "pages": [],
         }

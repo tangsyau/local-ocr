@@ -37,7 +37,17 @@ def write_smoke_png(path: Path) -> None:
     for y in range(height):
         rows.append(0)  # PNG filter type: None
         for x in range(width):
-            is_ink = (20 <= x < 300 and 20 <= y < 32) or (45 <= x < 275 and 55 <= y < 68)
+            grid = (
+                (20 <= x <= 300 and y in {12, 42, 72, 84})
+                or (12 <= y <= 84 and x in {20, 160, 300})
+            )
+            text_bars = (
+                (35 <= x < 125 and 23 <= y < 29)
+                or (180 <= x < 270 and 23 <= y < 29)
+                or (35 <= x < 110 and 53 <= y < 59)
+                or (180 <= x < 250 and 53 <= y < 59)
+            )
+            is_ink = grid or text_bars
             value = 0 if is_ink else 255
             rows.extend((value, value, value))
 
@@ -80,6 +90,11 @@ def main() -> int:
         action="store_true",
         help="with --prepare, verify both fast and accurate model profiles",
     )
+    parser.add_argument(
+        "--table",
+        action="store_true",
+        help="also load the lightweight table pipeline and run one local inference",
+    )
     args = parser.parse_args()
 
     suffix = ".exe" if os.name == "nt" else ""
@@ -94,12 +109,33 @@ def main() -> int:
             write_smoke_png(image_path)
             profiles = ("fast", "accurate") if args.all_profiles else ("fast",)
             for profile in profiles:
-                request_lines.append(request(f"smoke-prepare-{profile}", "prepare", {"profile": profile}))
+                request_lines.append(
+                    request(
+                        f"smoke-prepare-{profile}",
+                        "prepare",
+                        {"profile": profile, "mode": "text"},
+                    )
+                )
                 request_lines.append(
                     request(
                         f"smoke-recognize-{profile}",
                         "recognize",
-                        {"path": str(image_path), "scoreThreshold": 0.5},
+                        {"path": str(image_path), "scoreThreshold": 0.5, "mode": "text"},
+                    )
+                )
+            if args.table:
+                request_lines.append(
+                    request(
+                        "smoke-prepare-table",
+                        "prepare",
+                        {"profile": "fast", "mode": "table"},
+                    )
+                )
+                request_lines.append(
+                    request(
+                        "smoke-recognize-table",
+                        "recognize",
+                        {"path": str(image_path), "scoreThreshold": 0.5, "mode": "table"},
                     )
                 )
         request_lines.append(request("smoke-shutdown", "shutdown"))
@@ -158,8 +194,10 @@ def main() -> int:
                 raise RuntimeError(f"Sidecar smoke test failed: {results[request_id]}")
 
         if args.prepare:
-            for profile in profiles:
-                request_id = f"smoke-recognize-{profile}"
+            recognition_ids = [f"smoke-recognize-{profile}" for profile in profiles]
+            if args.table:
+                recognition_ids.append("smoke-recognize-table")
+            for request_id in recognition_ids:
                 progress_events = [
                     event for event in events.get(request_id, []) if event.get("event") == "progress"
                 ]
@@ -168,6 +206,10 @@ def main() -> int:
                 final_progress = progress_events[-1]
                 if final_progress.get("page") != 1 or final_progress.get("pageCount") != 1:
                     raise RuntimeError(f"Invalid OCR progress event: {final_progress}")
+            if args.table:
+                table_result = results["smoke-recognize-table"].get("result") or {}
+                if table_result.get("resultType") != "table" or "tableCount" not in table_result:
+                    raise RuntimeError(f"Invalid table recognition result: {table_result}")
 
         process.stdin.close()
         return_code = process.wait(timeout=60)
