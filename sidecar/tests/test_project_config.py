@@ -79,11 +79,21 @@ class ProjectConfigTests(unittest.TestCase):
             ROOT / "compat" / "webkitgtk-4.0" / "src-tauri" / "Cargo.toml"
         ).read_text(encoding="utf-8")
 
-        self.assertEqual(package["version"], "0.7.3")
+        self.assertEqual(package["version"], "0.7.4")
         self.assertEqual(standard_config["version"], package["version"])
         self.assertEqual(legacy_config["package"]["version"], package["version"])
-        self.assertIn('version = "0.7.3"', standard_cargo)
-        self.assertIn('version = "0.7.3"', legacy_cargo)
+        self.assertIn('version = "0.7.4"', standard_cargo)
+        self.assertIn('version = "0.7.4"', legacy_cargo)
+
+    def test_model_manager_uses_aligned_columns_and_one_deletion_flow(self) -> None:
+        app = (ROOT / "src" / "App.vue").read_text(encoding="utf-8")
+        styles = (ROOT / "src" / "styles.css").read_text(encoding="utf-8")
+        sidecar = (ROOT / "sidecar" / "main.py").read_text(encoding="utf-8")
+        self.assertNotIn("重下", app)
+        self.assertNotIn("repair_models", sidecar)
+        self.assertIn("grid-template-columns: minmax(0, 1fr) 3.4em 4.8em", styles)
+        self.assertIn('font-family: "Cascadia Mono", Consolas', styles)
+        self.assertIn("删除当前模型缓存", app)
 
     def test_frontend_and_protocol_support_batch_and_table_results(self) -> None:
         app = (ROOT / "src" / "App.vue").read_text(encoding="utf-8")

@@ -18,6 +18,10 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 h1 { margin: 0; font-size: 28px; letter-spacing: -.04em; }
 .privacy-badge { display: flex; align-items: center; gap: 9px; padding: 9px 13px; border: 1px solid #c7d9cb; border-radius: 999px; color: #326441; background: #f3faf4; font-size: 13px; font-weight: 650; }
 .privacy-badge span { width: 8px; height: 8px; border-radius: 50%; background: #43a862; box-shadow: 0 0 0 4px #dcefe1; }
+.save-badge { display: flex; align-items: center; gap: 7px; padding: 8px 11px; border: 1px solid #d4dbd5; border-radius: 999px; color: #56635b; background: #f7f9f6; font-size: 11px; font-weight: 650; }
+.save-badge span { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: #73887a; }
+.save-badge.error { border-color: #e0b8b3; color: #93463f; background: #fff5f3; }
+.save-badge.error span { background: #c7564b; }
 
 .workspace { display: grid; grid-template-columns: 350px minmax(0, 1fr); min-height: 0; }
 .sidebar { padding: 14px 16px; border-right: 1px solid #d8dcd5; background: #f6f7f3; overflow: auto; }
@@ -34,20 +38,21 @@ h1 { margin: 0; font-size: 28px; letter-spacing: -.04em; }
 .model-status-card { padding: 0 10px 9px; display: grid; gap: 6px; }
 .model-status-card > div { display: flex; justify-content: space-between; gap: 8px; color: #68736b; font-size: 10px; }
 .model-status-card > div strong { color: #33493b; }
-.model-status-card p.model-path { margin: 1px 0 0; padding: 6px; overflow: hidden; border-radius: 6px; color: #68736b; background: #f2f4f1; font-family: ui-monospace, monospace; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.model-status-card p.model-path { margin: 1px 0 0; padding: 6px; overflow: hidden; border-radius: 6px; color: #68736b; background: #f2f4f1; font-family: "Cascadia Mono", Consolas, "Noto Sans Mono CJK SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .model-status-card ul { max-height: 108px; margin: 0; padding: 0; overflow: auto; list-style: none; }
-.model-status-card li { padding: 4px 0; display: flex; justify-content: space-between; gap: 8px; border-bottom: 1px solid #edf0ec; font-size: 9px; }
-.model-status-card li span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.model-status-card li small { flex: 0 0 auto; color: #758078; }
-.model-status-card li button { padding: 0 3px; border: 0; background: transparent; color: #356d48; font-size: 9px; flex: 0 0 auto; }
+.model-status-card li { padding: 4px 0; display: grid; grid-template-columns: minmax(0, 1fr) 3.4em 4.8em; align-items: baseline; gap: 7px; border-bottom: 1px solid #edf0ec; font-size: 9px; }
+.model-status-card li .model-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-status-card li small { color: #758078; white-space: nowrap; }
+.model-status-card li .model-state { text-align: center; }
+.model-status-card li .model-size { text-align: right; font-variant-numeric: tabular-nums; }
 .model-progress { display: grid; gap: 4px; margin-top: 8px; color: #68736b; }
 .model-progress progress { width: 100%; height: 5px; accent-color: #356d48; }
 .model-progress small { font-size: 10px; line-height: 1.4; }
 .step-card p.save-notice { margin: 0; padding: 5px 10px; font-size: 10px; }
 .save-error, .task-main small.missing-file { color: #a14237; }
-.status-content > small { display: block; color: #7d867f; font-size: 9px; }
 .model-manager p.model-status-empty { margin: 0; padding: 0 10px 9px; font-size: 10px; }
 .model-actions { padding: 8px 10px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; border-top: 1px solid #e6e9e4; }
+.model-actions.model-cache-actions { grid-template-columns: minmax(0, .65fr) minmax(0, 1.35fr); }
 .model-actions button { padding: 5px; border: 1px solid #cad2cb; border-radius: 6px; color: #3f644c; background: #fff; font-size: 9px; }
 .model-actions button.delete-model { color: #93463f; border-color: #e0b8b3; }
 
@@ -227,7 +232,5 @@ textarea { flex: 1 1 0; width: 100%; height: auto; min-height: 0; resize: none; 
   .file-picker { padding: 7px 9px; }
   .file-picker .plus { width: 22px; height: 22px; }
   .settings-card label { margin-bottom: 5px; }
-  .status-content > span, .status-content > small { display: inline; }
-  .status-content > small { margin-left: 8px; }
   .sidebar > .step-card:last-child { border-bottom: 0; margin-bottom: 0; padding-bottom: 0; }
 }

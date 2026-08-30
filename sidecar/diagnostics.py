@@ -14,7 +14,7 @@ import zipfile
 from typing import Any
 
 
-METHODS = {"startup", "shutdown", "recognize", "prepare", "repair_models", "delete_models", "export_results", "export_preview", "validate_paths", "ping"}
+METHODS = {"startup", "shutdown", "recognize", "prepare", "delete_models", "export_results", "export_preview", "validate_paths", "ping"}
 CATEGORIES = {"ok", "download", "model", "runtime", "file", "storage", "unknown", "cancelled"}
 
 
@@ -66,7 +66,7 @@ def record_event(method: str, category: str = "ok") -> None:
 def safe_report(info: dict[str, Any]) -> dict[str, Any]:
     packages = info.get("packages") or {}
     return {
-        "appVersion": "0.7.3", "os": platform.system(), "osRelease": platform.release(),
+        "appVersion": "0.7.4", "os": platform.system(), "osRelease": platform.release(),
         "architecture": platform.machine(), "python": sys.version.split()[0],
         "frozen": bool(getattr(sys, "frozen", False)), "engineReady": bool(info.get("engineReady")),
         "profile": info.get("profile") if info.get("profile") in {"fast", "accurate"} else None,

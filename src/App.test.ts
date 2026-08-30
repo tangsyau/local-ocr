@@ -66,6 +66,12 @@ beforeEach(() => {
 afterEach(() => { wrapper?.unmount(); wrapper = null; vi.restoreAllMocks(); });
 
 describe("batch and recovery interactions", () => {
+  it("shows autosave in the header without duplicating it in the footer", async () => {
+    wrapper = mount(App); await flushPromises();
+    expect(wrapper.find(".save-badge").text()).toBe("自动保存已启用");
+    expect(wrapper.find(".status-content small").exists()).toBe(false);
+  });
+
   it("restarts the sidecar before switching an already-loaded native model", async () => {
     wrapper = mount(App); await flushPromises();
     await button("准备当前模型").trigger("click"); await flushPromises();

@@ -8,6 +8,7 @@ import { loadSession, saveSession, type AppSettings, type SavedSession } from ".
 import type { DiagnosticInfo, ModelCacheStatus, ModelProfile, OcrPage, OcrResult, OcrTable, OcrTask, OcrTaskStatus, RecognitionMode, SidecarEvent } from "./lib/types";
 
 type AppPhase = "starting" | "idle" | "preparing" | "recognizing" | "paused" | "error";
+type SavePhase = "loading" | "idle" | "saving" | "saved" | "error";
 
 const phase = ref<AppPhase>("starting");
 const status = ref("正在启动本地识别进程……");
@@ -33,9 +34,11 @@ const exportBusy = ref(false);
 const checkedTaskIds = ref<string[]>([]);
 const saveStatus = ref("正在读取上次任务……");
 const saveFailed = ref(false);
+const savePhase = ref<SavePhase>("loading");
 let sessionLoaded = false;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let saveChain: Promise<void> = Promise.resolve();
+let saveSequence = 0;
 const cleanupListeners: Array<() => void> = [];
 let skipRequestedTaskId = "";
 let activeTaskId = "";
@@ -80,6 +83,13 @@ const completedCount = computed(() => tasks.value.filter((task) => task.status =
 const exportableTasks = computed(() => tasks.value.filter((task) => task.result && task.result.pageCount > 0));
 const hasUnexported = computed(() => exportableTasks.value.some((task) => (task.exportedRevision ?? -1) !== (task.revision ?? 0)));
 const failedCount = computed(() => tasks.value.filter((task) => task.status === "failed" || task.status === "cancelled").length);
+const saveBadgeLabel = computed(() => ({
+  loading: "正在读取本机记录",
+  idle: "自动保存已启用",
+  saving: "正在自动保存",
+  saved: "已自动保存",
+  error: "自动保存失败"
+})[savePhase.value]);
 const tableTasks = computed(() => exportableTasks.value.filter((task) => (task.result?.rawTableCount ?? 0) > 0));
 const selectedImageBatchTasks = computed(() => {
   const task = selectedTask.value;
@@ -153,8 +163,10 @@ onMounted(async () => {
     }
     sessionLoaded = true;
     saveStatus.value = saved ? `已恢复 ${saved.tasks.length} 个任务；未完成项等待手动开始` : "任务和校对内容将自动保存在本机";
+    savePhase.value = saved ? "saved" : "idle";
   } catch (error) {
     saveFailed.value = true;
+    savePhase.value = "error";
     saveStatus.value = error instanceof Error ? error.message : "读取自动保存失败";
   }
   cleanupListeners.push(ocrSidecar.onExit(() => {
@@ -187,6 +199,7 @@ watch([tasks, selectedTaskId, scoreThreshold, modelProfile, recognitionMode, mer
   exportTxt, exportXlsx, exportHtml, exportGrouping, exportCollision, exportPrefix, exportSuffix, exportName], () => {
   if (!sessionLoaded) return;
   if (saveTimer) clearTimeout(saveTimer);
+  savePhase.value = "saving";
   saveTimer = setTimeout(() => { void flushSave().catch(() => {}); }, 400);
 }, { deep: true });
 
@@ -213,6 +226,8 @@ async function flushSave(): Promise<void> {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = null;
   if (!sessionLoaded) throw new Error("自动保存尚未就绪");
+  const sequence = ++saveSequence;
+  savePhase.value = "saving";
   const snapshot: SavedSession = JSON.parse(JSON.stringify({
     schema: 1, savedAt: new Date().toISOString(), selectedTaskId: selectedTaskId.value, tasks: tasks.value,
     settings: { profile: modelProfile.value, mode: recognitionMode.value, threshold: scoreThreshold.value,
@@ -222,11 +237,17 @@ async function flushSave(): Promise<void> {
   saveChain = saveChain.catch(() => {}).then(() => saveSession(snapshot));
   try {
     await saveChain;
-    saveStatus.value = "任务与校对内容已自动保存（仅在本机）";
-    saveFailed.value = false;
+    if (sequence === saveSequence) {
+      saveStatus.value = "任务与校对内容已自动保存（仅在本机）";
+      saveFailed.value = false;
+      savePhase.value = "saved";
+    }
   } catch (error) {
-    saveFailed.value = true;
-    saveStatus.value = error instanceof Error ? error.message : "自动保存失败";
+    if (sequence === saveSequence) {
+      saveFailed.value = true;
+      savePhase.value = "error";
+      saveStatus.value = error instanceof Error ? error.message : "自动保存失败";
+    }
     throw error;
   }
 }
@@ -392,15 +413,7 @@ async function prepareModels(): Promise<boolean> {
   return runModelPreparation();
 }
 
-async function repairModels(name?: string): Promise<void> {
-  if (modelControlsBusy.value) return;
-  if (!window.confirm(name
-    ? `重新下载 ${name}？现有缓存会移动到模型目录下的备份文件夹，可手动恢复；不删除原缓存。`
-    : "将不完整的模型缓存移到备份文件夹，并下载缺失模型。完整模型保持不变。是否继续？")) return;
-  await runModelPreparation(name ? [name] : null);
-}
-
-async function runModelPreparation(repairNames?: string[] | null): Promise<boolean> {
+async function runModelPreparation(): Promise<boolean> {
   if (queueRunning.value || exportBusy.value || setupBusy.value) return false;
   const changingLoadedModel = ocrSidecar.running
     && preparedProfile.value !== null
@@ -434,8 +447,8 @@ async function runModelPreparation(repairNames?: string[] | null): Promise<boole
   }, 2000);
   try {
     await ocrSidecar.request(
-      repairNames === undefined ? "prepare" : "repair_models",
-      { profile: modelProfile.value, mode: recognitionMode.value, reload: true, ...(repairNames ? { names: repairNames } : {}) },
+      "prepare",
+      { profile: modelProfile.value, mode: recognitionMode.value, reload: true },
       (event) => {
         if (["imports_ready", "create_pipeline", "model"].includes(event.event)) importsFinished = true;
         updateGlobalStatus(event);
@@ -489,7 +502,8 @@ async function refreshModelStatus(): Promise<void> {
 async function deleteCurrentModels(): Promise<void> {
   if (modelControlsBusy.value) return;
   const label = recognitionMode.value === "table" ? "当前表格与文字模型" : "当前文字模型";
-  if (!window.confirm(`确定删除${label}的本地缓存吗？下次准备模型时需要重新联网下载。`)) return;
+  const modelCount = modelCache.value?.modelCount ?? 0;
+  if (!window.confirm(`确定删除${label}的本地缓存吗？这会删除当前组合涉及的 ${modelCount} 个模型目录；原文档和识别结果不受影响。下次准备模型时需要重新联网下载。`)) return;
   modelManagerBusy.value = true;
   try {
     const result = await ocrSidecar.request<{ removed: string[]; freedBytes: number; status: ModelCacheStatus }>(
@@ -521,7 +535,7 @@ async function copyDiagnostics(): Promise<void> {
     }
   }
   const diagnostics: DiagnosticInfo = {
-    appVersion: "0.7.3",
+    appVersion: "0.7.4",
     sidecarRunning: ocrSidecar.running,
     sidecarStderr: ocrSidecar.stderr ? "运行日志已省略，以免复制文档路径或识别相关输出" : "",
     ...remote
@@ -862,7 +876,7 @@ function showError(error: unknown): void {
       ? error.stack ?? ""
       : "";
   const help: Record<string, string> = {
-    download: "模型下载失败：请检查网络，或使用“修复缺失模型”后重试。",
+    download: "模型下载失败：请检查网络；如缓存异常，可删除当前模型缓存后重新准备。",
     model: "模型无法载入：可对对应模型重新下载；旧缓存会保留备份。",
     runtime: "原生运行库错误：请保留版本与平台信息，并导出诊断包。",
     file: "原文件不可访问：请检查是否移动、删除或没有读取权限。",
@@ -879,6 +893,7 @@ function showError(error: unknown): void {
       <div class="header-actions">
         <span v-if="isWebkitGtk40Build" class="compat-badge">WebKitGTK 4.0 兼容版</span>
         <span v-if="tasks.length" class="queue-summary">完成 {{ completedCount }} / {{ tasks.length }}</span>
+        <div :class="['save-badge', { error: saveFailed }]" :title="saveStatus"><span></span>{{ saveBadgeLabel }}</div>
         <div class="privacy-badge"><span></span>文档仅在本机处理</div>
       </div>
     </header>
@@ -925,16 +940,16 @@ function showError(error: unknown): void {
               <p class="model-path" :title="modelCache.cacheRoot">{{ modelCache.cacheRoot }}</p>
               <ul>
                 <li v-for="model in modelCache.models" :key="model.name">
-                  <span>{{ model.name }}</span><small>{{ model.state === 'incomplete' ? '不完整 · ' : '' }}{{ model.sizeBytes ? formatBytes(model.sizeBytes) : "未下载" }}</small>
-                  <button :disabled="modelControlsBusy" @click="repairModels(model.name)">重下</button>
+                  <span class="model-name" :title="model.name">{{ model.name }}</span>
+                  <small class="model-state">{{ model.state === "ready" ? "就绪" : model.state === "incomplete" ? "不完整" : "未下载" }}</small>
+                  <small class="model-size">{{ model.sizeBytes ? formatBytes(model.sizeBytes) : "—" }}</small>
                 </li>
               </ul>
             </div>
             <p v-else class="model-status-empty">启动识别进程后可查看模型状态。</p>
-            <div class="model-actions">
+            <div class="model-actions model-cache-actions">
               <button :disabled="!sidecarReady || modelManagerBusy" @click="refreshModelStatus">刷新</button>
-              <button :disabled="!sidecarReady || modelControlsBusy" @click="repairModels()">修复缺失模型</button>
-              <button class="delete-model" :disabled="!modelCache?.sizeBytes || modelControlsBusy" @click="deleteCurrentModels">删除缓存</button>
+              <button class="delete-model" :disabled="!modelCache?.sizeBytes || modelControlsBusy" @click="deleteCurrentModels">删除当前模型缓存</button>
             </div>
           </details>
           <details class="model-manager maintenance-manager">
@@ -1081,7 +1096,6 @@ function showError(error: unknown): void {
       <span class="status-dot"></span>
       <div class="status-content">
         <span>{{ status }}</span>
-        <small :class="{ 'save-error': saveFailed }">{{ saveFailed ? saveStatus : '● 本机自动保存' }}</small>
         <button v-if="!sidecarReady && !setupBusy" class="text-button" :disabled="queueRunning" @click="restartSidecar">重启识别进程</button>
         <details v-if="phase === 'error' && errorDetails" class="error-details"><summary>查看技术详情</summary><pre>{{ errorDetails }}</pre></details>
       </div>

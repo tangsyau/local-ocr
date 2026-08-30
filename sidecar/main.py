@@ -109,7 +109,7 @@ class SidecarServer:
             self._worker = worker
             worker.start()
 
-    def start_prepare(self, request_id: str, params: dict[str, Any], repair: bool = False) -> None:
+    def start_prepare(self, request_id: str, params: dict[str, Any]) -> None:
         with self._worker_lock:
             if self._initializing or (self._worker is not None and self._worker.is_alive()):
                 raise RuntimeError("已有模型准备或识别任务正在运行")
@@ -120,7 +120,7 @@ class SidecarServer:
                 lambda message, page, event, count: self._progress(request_id, message, page, event, count)
             )
             with self._worker_lock:
-                self._worker = threading.Thread(target=self._run_prepare, args=(request_id, params, repair), name="model-prepare", daemon=True)
+                self._worker = threading.Thread(target=self._run_prepare, args=(request_id, params), name="model-prepare", daemon=True)
                 self._worker.start()
         except BaseException:
             stop_prepare_trace()
@@ -129,15 +129,14 @@ class SidecarServer:
             with self._worker_lock:
                 self._initializing = False
 
-    def _run_prepare(self, request_id: str, params: dict[str, Any], repair: bool) -> None:
-        method = "repair_models" if repair else "prepare"
+    def _run_prepare(self, request_id: str, params: dict[str, Any]) -> None:
+        method = "prepare"
         try:
             profile, mode = str(params.get("profile") or "fast"), str(params.get("mode") or "text")
-            if not repair and params.get("reload"):
+            if params.get("reload"):
                 self.engine.unload()
-            moved = self.engine.quarantine_models(profile, mode, params.get("names")) if repair else []
             result = self.engine.prepare(profile, mode, lambda message, page, event, count: self._progress(request_id, message, page, event, count))
-            response = {"id": request_id, "type": "result", "result": {**result, "quarantined": moved}}
+            response = {"id": request_id, "type": "result", "result": result}
             record_event(method)
         except Exception as error:
             category = error_category(error)
@@ -212,8 +211,8 @@ class SidecarServer:
             }
         elif method == "runtime_check":
             result = self.engine.check_native_runtime()
-        elif method in {"prepare", "repair_models"}:
-            self.start_prepare(request_id, params, repair=method == "repair_models")
+        elif method == "prepare":
+            self.start_prepare(request_id, params)
             return True
         elif method == "model_status":
             result = model_cache_status(
@@ -249,7 +248,7 @@ class SidecarServer:
             target = os.environ.get("LOCAL_OCR_UI_SMOKE_DIR")
             if not target or not Path(target).is_dir():
                 raise ValueError("UI 测试未启用")
-            report = {"appVersion": "0.7.3", "sidecar": True,
+            report = {"appVersion": "0.7.4", "sidecar": True,
                       "width": int(params.get("width") or 0), "height": int(params.get("height") or 0),
                       "sidebarFits": bool(params.get("sidebarFits"))}
             marker = Path(target) / "ready.tmp"

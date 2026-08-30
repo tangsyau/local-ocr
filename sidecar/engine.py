@@ -11,7 +11,6 @@ import shutil
 import sys
 import threading
 import time
-import uuid
 from difflib import SequenceMatcher
 from html.parser import HTMLParser
 from pathlib import Path
@@ -543,30 +542,6 @@ class OcrEngine:
             "freedBytes": before["sizeBytes"],
             "status": model_cache_status(profile, mode, root),
         }
-
-    def quarantine_models(self, profile: str, mode: str, names: list[str] | None = None) -> list[str]:
-        root = official_model_cache().expanduser().resolve()
-        allowed = set(model_names(profile, mode))
-        chosen = set(names) if names is not None else {
-            item["name"] for item in model_cache_status(profile, mode, root)["models"] if not item["installed"]
-        }
-        if chosen - allowed:
-            raise ValueError("只能修复当前组合的官方模型")
-        self.unload()
-        moved = []
-        for name in sorted(chosen):
-            target = root / name
-            if target.is_symlink() or (target.exists() and not target.is_dir()):
-                raise ValueError("拒绝修复符号链接或非目录模型缓存")
-            if not target.exists():
-                continue
-            backup_root = root / ".local-ocr-backups"
-            if backup_root.is_symlink():
-                raise ValueError("模型备份目录不能是符号链接")
-            backup_root.mkdir(parents=True, exist_ok=True)
-            target.rename(backup_root / f"{name}-{uuid.uuid4().hex[:12]}")
-            moved.append(name)
-        return moved
 
     def prepare(
         self,

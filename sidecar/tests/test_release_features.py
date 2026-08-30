@@ -92,21 +92,6 @@ class ExportRulesTests(unittest.TestCase):
 
 
 class MaintenanceTests(unittest.TestCase):
-    def test_quarantine_preserves_old_cache_and_leaves_other_models(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            model = root / "PP-OCRv5_mobile_det"
-            model.mkdir()
-            (model / "broken.bin").write_bytes(b"retain")
-            (root / "unrelated").mkdir()
-            with patch("engine.official_model_cache", return_value=root):
-                moved = OcrEngine().quarantine_models("fast", "text")
-            self.assertEqual(moved, [model.name])
-            self.assertFalse(model.exists())
-            self.assertTrue((root / "unrelated").exists())
-            backup = next((root / ".local-ocr-backups").iterdir())
-            self.assertEqual((backup / "broken.bin").read_bytes(), b"retain")
-
     def test_incomplete_models_are_not_reported_installed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
