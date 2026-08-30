@@ -101,6 +101,8 @@ export type OcrTaskStatus =
 
 export interface OcrTask {
   id: string;
+  batchId: string;
+  batchIndex: number;
   path: string;
   fileName: string;
   status: OcrTaskStatus;

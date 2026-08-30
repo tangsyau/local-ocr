@@ -709,13 +709,23 @@ def _available_path(directory: Path, name: str, reserved: set[Path]) -> Path:
     return candidate
 
 
-def export_table_results(directory_value: str, items: list[dict[str, Any]]) -> dict[str, Any]:
+def export_table_results(
+    directory_value: str,
+    items: list[dict[str, Any]],
+    formats: list[str] | None = None,
+) -> dict[str, Any]:
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill
 
     directory = Path(directory_value).expanduser().resolve(strict=True)
     if not directory.is_dir():
         raise ValueError("导出位置不是文件夹")
+    requested_formats = set(formats if formats is not None else ["xlsx", "html"])
+    unsupported_formats = requested_formats - {"xlsx", "html"}
+    if unsupported_formats:
+        raise ValueError(f"不支持的表格导出格式：{', '.join(sorted(unsupported_formats))}")
+    if not requested_formats:
+        raise ValueError("至少选择一种表格导出格式")
 
     exported: list[dict[str, Any]] = []
     reserved: set[Path] = set()
@@ -725,11 +735,20 @@ def export_table_results(directory_value: str, items: list[dict[str, Any]]) -> d
             continue
         source_name = Path(str(item.get("fileName") or "表格识别结果")).name
         stem = Path(source_name).stem.strip() or "表格识别结果"
-        xlsx_path = _available_path(directory, f"{stem}.xlsx", reserved)
-        html_path = _available_path(directory, f"{stem}.tables.html", reserved)
+        xlsx_path = (
+            _available_path(directory, f"{stem}.xlsx", reserved)
+            if "xlsx" in requested_formats
+            else None
+        )
+        html_path = (
+            _available_path(directory, f"{stem}.tables.html", reserved)
+            if "html" in requested_formats
+            else None
+        )
 
-        workbook = Workbook()
-        workbook.remove(workbook.active)
+        workbook = Workbook() if xlsx_path is not None else None
+        if workbook is not None:
+            workbook.remove(workbook.active)
         html_sections: list[str] = []
         for ordinal, table in enumerate(tables, start=1):
             page_number = int(table.get("pageIndex") or 0) + 1
@@ -748,66 +767,73 @@ def export_table_results(directory_value: str, items: list[dict[str, Any]]) -> d
             base_title = f"{page_token}-T{table_number}"[:31]
             title = base_title
             suffix = 2
-            while title in workbook.sheetnames:
-                marker = f"-{suffix}"
-                title = f"{base_title[:31 - len(marker)]}{marker}"
-                suffix += 1
-            sheet = workbook.create_sheet(title)
+            if workbook is not None:
+                while title in workbook.sheetnames:
+                    marker = f"-{suffix}"
+                    title = f"{base_title[:31 - len(marker)]}{marker}"
+                    suffix += 1
+                sheet = workbook.create_sheet(title)
+            else:
+                sheet = None
 
             rows = list(table.get("rows") or [])
-            for row in rows:
-                for cell in row:
-                    row_index = int(cell.get("row") or 0) + 1
-                    column_index = int(cell.get("column") or 0) + 1
-                    row_span = max(1, int(cell.get("rowSpan") or 1))
-                    col_span = max(1, int(cell.get("colSpan") or 1))
-                    target = sheet.cell(row=row_index, column=column_index)
-                    target.value = str(cell.get("text") or "")
-                    target.alignment = Alignment(vertical="center", wrap_text=True)
-                    if row_index == 1:
-                        target.font = Font(bold=True)
-                        target.fill = PatternFill("solid", fgColor="E7EFE9")
-                    if row_span > 1 or col_span > 1:
-                        sheet.merge_cells(
-                            start_row=row_index,
-                            start_column=column_index,
-                            end_row=row_index + row_span - 1,
-                            end_column=column_index + col_span - 1,
+            if sheet is not None:
+                for row in rows:
+                    for cell in row:
+                        row_index = int(cell.get("row") or 0) + 1
+                        column_index = int(cell.get("column") or 0) + 1
+                        row_span = max(1, int(cell.get("rowSpan") or 1))
+                        col_span = max(1, int(cell.get("colSpan") or 1))
+                        target = sheet.cell(row=row_index, column=column_index)
+                        target.value = str(cell.get("text") or "")
+                        target.alignment = Alignment(vertical="center", wrap_text=True)
+                        if row_index == 1:
+                            target.font = Font(bold=True)
+                            target.fill = PatternFill("solid", fgColor="E7EFE9")
+                        if row_span > 1 or col_span > 1:
+                            sheet.merge_cells(
+                                start_row=row_index,
+                                start_column=column_index,
+                                end_row=row_index + row_span - 1,
+                                end_column=column_index + col_span - 1,
+                            )
+                        width = min(max(len(str(target.value)) + 2, 10), 40)
+                        column_letter = target.column_letter
+                        sheet.column_dimensions[column_letter].width = max(
+                            sheet.column_dimensions[column_letter].width or 0,
+                            width / col_span,
                         )
-                    width = min(max(len(str(target.value)) + 2, 10), 40)
-                    column_letter = target.column_letter
-                    sheet.column_dimensions[column_letter].width = max(
-                        sheet.column_dimensions[column_letter].width or 0,
-                        width / col_span,
-                    )
 
-            table_html = safe_table_html(rows)
-            html_sections.append(
-                f"<section><h2>{page_label} · 表格 {table_number}</h2>{table_html}</section>"
+            if html_path is not None:
+                table_html = safe_table_html(rows)
+                html_sections.append(
+                    f"<section><h2>{page_label} · 表格 {table_number}</h2>{table_html}</section>"
+                )
+
+        file_result: dict[str, Any] = {"source": source_name, "tableCount": len(tables)}
+        if workbook is not None and xlsx_path is not None:
+            workbook.save(xlsx_path)
+            file_result["xlsx"] = str(xlsx_path)
+        if html_path is not None:
+            html_document = (
+                "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
+                f"<title>{html.escape(stem)} 表格识别结果</title>"
+                "<style>body{font-family:sans-serif;margin:24px;color:#18201d}"
+                "section{margin-bottom:32px}table{border-collapse:collapse;max-width:100%;}"
+                "td{border:1px solid #68716b;padding:6px 9px;vertical-align:top}"
+                "h1{font-size:22px}h2{font-size:16px}</style></head><body>"
+                f"<h1>{html.escape(source_name)}</h1>{''.join(html_sections)}</body></html>"
             )
-
-        workbook.save(xlsx_path)
-        html_document = (
-            "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
-            f"<title>{html.escape(stem)} 表格识别结果</title>"
-            "<style>body{font-family:sans-serif;margin:24px;color:#18201d}"
-            "section{margin-bottom:32px}table{border-collapse:collapse;max-width:100%;}"
-            "td{border:1px solid #68716b;padding:6px 9px;vertical-align:top}"
-            "h1{font-size:22px}h2{font-size:16px}</style></head><body>"
-            f"<h1>{html.escape(source_name)}</h1>{''.join(html_sections)}</body></html>"
-        )
-        html_path.write_text(html_document, encoding="utf-8")
-        exported.append(
-            {
-                "source": source_name,
-                "tableCount": len(tables),
-                "xlsx": str(xlsx_path),
-                "html": str(html_path),
-            }
-        )
+            html_path.write_text(html_document, encoding="utf-8")
+            file_result["html"] = str(html_path)
+        exported.append(file_result)
 
     return {
         "count": len(exported),
         "tableCount": sum(int(item["tableCount"]) for item in exported),
+        "formatCounts": {
+            output_format: sum(output_format in item for item in exported)
+            for output_format in sorted(requested_formats)
+        },
         "files": exported,
     }

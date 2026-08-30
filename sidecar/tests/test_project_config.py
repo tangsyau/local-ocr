@@ -69,11 +69,11 @@ class ProjectConfigTests(unittest.TestCase):
             ROOT / "compat" / "webkitgtk-4.0" / "src-tauri" / "Cargo.toml"
         ).read_text(encoding="utf-8")
 
-        self.assertEqual(package["version"], "0.6.0")
+        self.assertEqual(package["version"], "0.6.1")
         self.assertEqual(standard_config["version"], package["version"])
         self.assertEqual(legacy_config["package"]["version"], package["version"])
-        self.assertIn('version = "0.6.0"', standard_cargo)
-        self.assertIn('version = "0.6.0"', legacy_cargo)
+        self.assertIn('version = "0.6.1"', standard_cargo)
+        self.assertIn('version = "0.6.1"', legacy_cargo)
 
     def test_frontend_and_protocol_support_batch_and_table_results(self) -> None:
         app = (ROOT / "src" / "App.vue").read_text(encoding="utf-8")
@@ -102,13 +102,24 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertIn("scrollbar-gutter: stable", styles)
         self.assertIn("overflow-y: scroll", styles)
         self.assertIn("overflow-x: scroll", styles)
+        self.assertIn(".table-scroll::-webkit-scrollbar { display: none", styles)
+        self.assertIn("scrollbar-width: none", styles)
         self.assertIn("width: max-content", styles)
         self.assertIn('aria-label="表格识别结果，可上下滚动"', table_viewer)
         self.assertIn('aria-label="表格顶部横向滚动条"', table_viewer)
         self.assertIn("scrollFromTop", table_viewer)
         self.assertIn("resultFocusMode", app)
         self.assertIn("退出专注模式（Esc）", app)
-        self.assertIn("自动合并连续分页表格", app)
+        self.assertIn("合并 PDF 或同批图片的连续表格", app)
+        self.assertIn("imageBatchTables", app)
+        self.assertIn("导出所选格式", app)
+        self.assertIn('formats: tableFormats', app)
+        run_queue = app.split("async function runQueue", 1)[1].split("async function pauseQueue", 1)[0]
+        self.assertNotIn("selectedTaskId.value = task.id", run_queue)
+        table_header_style = styles.split(".table-card-header", 1)[1].split("}", 1)[0]
+        self.assertNotIn("position: sticky", table_header_style)
+        self.assertIn(".queue-card { min-height: 0; }", styles)
+        self.assertIn(".topbar { height: 78px", styles)
         self.assertIn('"model_status"', app)
         self.assertIn('"delete_models"', app)
         self.assertIn('"diagnostics"', app)

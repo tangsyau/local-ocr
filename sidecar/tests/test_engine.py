@@ -280,6 +280,38 @@ class EngineSchemaTests(unittest.TestCase):
             html_text = html_path.read_text(encoding="utf-8")
             self.assertNotIn("<script", html_text)
 
+    def test_export_table_results_writes_only_selected_formats(self) -> None:
+        page = extract_table_page(FakeTableResult())
+        with tempfile.TemporaryDirectory() as temp_dir:
+            html_result = export_table_results(
+                temp_dir,
+                [{"fileName": "名单.pdf", "tables": page["tables"]}],
+                ["html"],
+            )
+            exported = html_result["files"][0]
+            self.assertNotIn("xlsx", exported)
+            self.assertIn("html", exported)
+            self.assertEqual(html_result["formatCounts"], {"html": 1})
+            self.assertEqual(list(Path(temp_dir).glob("*.xlsx")), [])
+        with tempfile.TemporaryDirectory() as temp_dir:
+            xlsx_result = export_table_results(
+                temp_dir,
+                [{"fileName": "名单.pdf", "tables": page["tables"]}],
+                ["xlsx"],
+            )
+            exported = xlsx_result["files"][0]
+            self.assertIn("xlsx", exported)
+            self.assertNotIn("html", exported)
+            self.assertEqual(xlsx_result["formatCounts"], {"xlsx": 1})
+            self.assertEqual(list(Path(temp_dir).glob("*.html")), [])
+
+    def test_export_table_results_rejects_empty_or_unknown_formats(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with self.assertRaisesRegex(ValueError, "至少选择"):
+                export_table_results(temp_dir, [], [])
+            with self.assertRaisesRegex(ValueError, "不支持"):
+                export_table_results(temp_dir, [], ["csv"])
+
     def test_pdf_page_count_uses_pdfium_and_closes_document(self) -> None:
         closed = False
 

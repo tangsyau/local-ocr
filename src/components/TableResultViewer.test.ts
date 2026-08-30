@@ -3,7 +3,7 @@ import { mount } from "@vue/test-utils";
 import { nextTick } from "vue";
 import { describe, expect, it } from "vitest";
 import TableResultViewer from "./TableResultViewer.vue";
-import { displayTables, tableToTsv } from "../lib/table-results";
+import { displayTables, imageBatchTables, tableToTsv } from "../lib/table-results";
 import type { OcrResult, OcrTable } from "../lib/types";
 
 function wideTallTable(): OcrTable {
@@ -29,7 +29,7 @@ function wideTallTable(): OcrTable {
 }
 
 describe("TableResultViewer", () => {
-  it("renders a top scrollbar before a tall table and keeps both directions synchronized", async () => {
+  it("renders the single visible horizontal scrollbar before a tall table and synchronizes content", async () => {
     const wrapper = mount(TableResultViewer, { props: { tables: [wideTallTable()] } });
     const top = wrapper.find<HTMLElement>(".table-top-scroll");
     const body = wrapper.find<HTMLElement>(".table-scroll");
@@ -79,5 +79,44 @@ describe("TableResultViewer", () => {
 
     expect(displayTables(result, true)).toEqual([merged]);
     expect(displayTables(result, false)).toEqual([first, second]);
+  });
+
+  it("merges repeated table headers across images selected in the same batch", () => {
+    const makeResult = (path: string, page: number, value: string): OcrResult => {
+      const source = wideTallTable();
+      source.pageIndex = page;
+      source.endPageIndex = page;
+      source.rows = [
+        source.rows[0].slice(0, 2),
+        source.rows[1].slice(0, 2).map((cell, index) => ({ ...cell, text: index ? value : `${page + 1}` }))
+      ];
+      return {
+        path,
+        profile: "fast",
+        resultType: "table",
+        cancelled: false,
+        text: "",
+        pageCount: 1,
+        totalPageCount: 1,
+        blockCount: 2,
+        tableCount: 1,
+        rawTableCount: 1,
+        elapsedMs: 1,
+        pages: [{ pageIndex: 0, text: "", blocks: [], tables: [source] }],
+        tables: [source]
+      };
+    };
+
+    const first = makeResult("one.png", 0, "第一项");
+    const second = makeResult("two.png", 0, "第二项");
+    const raw = imageBatchTables([first, second], false);
+    const merged = imageBatchTables([first, second], true);
+
+    expect(raw).toHaveLength(2);
+    expect(raw[1].pageIndex).toBe(1);
+    expect(merged).toHaveLength(1);
+    expect(merged[0].sourceTableCount).toBe(2);
+    expect(merged[0].endPageIndex).toBe(1);
+    expect(merged[0].rows).toHaveLength(3);
   });
 });

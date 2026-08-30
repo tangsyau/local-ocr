@@ -2,9 +2,9 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import TableResultViewer from "./components/TableResultViewer.vue";
 import { ocrSidecar, SidecarRequestError } from "./lib/sidecar";
-import { displayTables, tableToTsv } from "./lib/table-results";
+import { displayTables, imageBatchTables, tableToTsv } from "./lib/table-results";
 import { convertLocalFileSrc, createId, isWebkitGtk40Build, openLocalDialog } from "./lib/tauri-bridge";
-import type { DiagnosticInfo, ModelCacheStatus, ModelProfile, OcrResult, OcrTask, OcrTaskStatus, RecognitionMode, SidecarEvent } from "./lib/types";
+import type { DiagnosticInfo, ModelCacheStatus, ModelProfile, OcrResult, OcrTable, OcrTask, OcrTaskStatus, RecognitionMode, SidecarEvent } from "./lib/types";
 
 type AppPhase = "starting" | "idle" | "preparing" | "recognizing" | "paused" | "error";
 
@@ -20,6 +20,9 @@ const preparedMode = ref<RecognitionMode | null>(null);
 const resultView = ref<"text" | "tables">("text");
 const resultFocusMode = ref(false);
 const mergeCrossPageTables = ref(true);
+const exportTxt = ref(true);
+const exportXlsx = ref(true);
+const exportHtml = ref(false);
 const sidecarReady = ref(false);
 const queueRunning = ref(false);
 const queuePaused = ref(false);
@@ -44,10 +47,51 @@ const queuedCount = computed(() => tasks.value.filter((task) => task.status === 
 const completedCount = computed(() => tasks.value.filter((task) => task.status === "completed").length);
 const exportableTasks = computed(() => tasks.value.filter((task) => task.status === "completed" && task.result));
 const tableTasks = computed(() => exportableTasks.value.filter((task) => (task.result?.rawTableCount ?? 0) > 0));
-const selectedTables = computed(() => displayTables(selectedResult.value, mergeCrossPageTables.value));
-const selectedHasMergedTables = computed(
-  () => Boolean(selectedResult.value && selectedResult.value.rawTableCount > selectedResult.value.tableCount)
+const selectedImageBatchTasks = computed(() => {
+  const task = selectedTask.value;
+  if (!task || isPdfPath(task.path)) return [];
+  return tasks.value
+    .filter((item) => item.batchId === task.batchId && !isPdfPath(item.path))
+    .sort((left, right) => left.batchIndex - right.batchIndex);
+});
+const selectedUsesImageBatch = computed(
+  () => !queueRunning.value && selectedImageBatchTasks.value.length > 1 && selectedImageBatchTasks.value.some((task) => task.result)
 );
+const selectedBatchResults = computed(() => selectedImageBatchTasks.value.map((task) => task.result ?? null));
+const selectedTables = computed(() => selectedUsesImageBatch.value
+  ? imageBatchTables(selectedBatchResults.value, mergeCrossPageTables.value)
+  : displayTables(selectedResult.value, mergeCrossPageTables.value)
+);
+const selectedRawTableCount = computed(() => selectedUsesImageBatch.value
+  ? imageBatchTables(selectedBatchResults.value, false).length
+  : selectedResult.value?.rawTableCount ?? 0
+);
+const selectedMergedTableCount = computed(() => selectedUsesImageBatch.value
+  ? imageBatchTables(selectedBatchResults.value, true).length
+  : selectedResult.value?.tableCount ?? 0
+);
+const selectedHasMergedTables = computed(() => selectedRawTableCount.value > selectedMergedTableCount.value);
+const selectedPageCount = computed(() => selectedUsesImageBatch.value
+  ? selectedImageBatchTasks.value.filter((task) => task.result).length
+  : selectedResult.value?.pageCount ?? 0
+);
+const selectedTotalPageCount = computed(() => selectedUsesImageBatch.value
+  ? selectedImageBatchTasks.value.length
+  : selectedResult.value?.totalPageCount ?? 0
+);
+const selectedBlockCount = computed(() => selectedUsesImageBatch.value
+  ? selectedImageBatchTasks.value.reduce((total, task) => total + (task.result?.blockCount ?? 0), 0)
+  : selectedResult.value?.blockCount ?? 0
+);
+const selectedElapsedMs = computed(() => selectedUsesImageBatch.value
+  ? selectedImageBatchTasks.value.reduce((total, task) => total + (task.result?.elapsedMs ?? 0), 0)
+  : selectedResult.value?.elapsedMs ?? 0
+);
+const exportFormatSelected = computed(() => exportTxt.value || exportXlsx.value || exportHtml.value);
+const canExportSelectedFormats = computed(() => !queueRunning.value && exportFormatSelected.value && (
+  (exportTxt.value && exportableTasks.value.length > 0)
+  || ((exportXlsx.value || exportHtml.value) && tableTasks.value.length > 0)
+));
 
 const statusLabels: Record<OcrTaskStatus, string> = {
   queued: "等待",
@@ -81,6 +125,10 @@ function toggleResultFocus(): void {
   resultFocusMode.value = !resultFocusMode.value;
 }
 
+function isPdfPath(path: string): boolean {
+  return path.toLowerCase().endsWith(".pdf");
+}
+
 async function chooseFiles(): Promise<void> {
   const selected = await openLocalDialog({
     multiple: true,
@@ -92,12 +140,15 @@ async function chooseFiles(): Promise<void> {
   if (!paths?.length) return;
 
   const existing = new Set(tasks.value.map((task) => task.path.toLowerCase()));
+  const batchId = createId();
   const additions: OcrTask[] = [];
-  for (const path of paths) {
+  for (const [batchIndex, path] of paths.entries()) {
     if (existing.has(path.toLowerCase())) continue;
     existing.add(path.toLowerCase());
     additions.push({
       id: createId(),
+      batchId,
+      batchIndex,
       path,
       fileName: path.split(/[\\/]/).pop() ?? path,
       status: "queued",
@@ -247,7 +298,7 @@ async function copyDiagnostics(): Promise<void> {
     }
   }
   const diagnostics: DiagnosticInfo = {
-    appVersion: "0.6.0",
+    appVersion: "0.6.1",
     sidecarRunning: ocrSidecar.running,
     sidecarStderr: ocrSidecar.stderr ? "运行日志已省略，以免复制文档路径或识别相关输出" : "",
     ...remote
@@ -289,7 +340,6 @@ async function runQueue(): Promise<void> {
       task.status = "running";
       task.resultType = recognitionMode.value;
       task.error = undefined;
-      selectedTaskId.value = task.id;
       status.value = `正在识别 ${completedCount.value + 1}/${tasks.value.length}：${task.fileName}`;
 
       try {
@@ -392,50 +442,79 @@ async function forceStopQueue(): Promise<void> {
   phase.value = "idle";
 }
 
-async function exportAllText(): Promise<void> {
-  if (!exportableTasks.value.length) return;
-  const directory = await openLocalDialog({ directory: true, multiple: false, title: "选择 TXT 导出文件夹" });
-  if (typeof directory !== "string") return;
-  if (!ocrSidecar.running && !(await startSidecar())) return;
-  try {
-    const response = await ocrSidecar.request<{ count: number }>(
-      "export_texts",
-      {
-        directory,
-        items: exportableTasks.value.map((task) => ({ fileName: task.fileName, text: task.result?.text ?? "" }))
-      },
-      undefined,
-      60_000
-    );
-    status.value = `已导出 ${response.count} 个 TXT 文件到 ${directory}`;
-  } catch (error) {
-    showError(error);
-  }
+interface TableExportItem {
+  fileName: string;
+  tables: OcrTable[];
 }
 
-async function exportAllTables(): Promise<void> {
-  if (!tableTasks.value.length) return;
-  const directory = await openLocalDialog({
-    directory: true,
-    multiple: false,
-    title: "选择 XLSX 和 HTML 导出文件夹"
-  });
+function imageBatchExportName(task: OcrTask): string {
+  const stem = task.fileName.replace(/\.[^.]+$/, "") || "批量图片";
+  return `${stem}-批量图片.pdf`;
+}
+
+function tableExportItems(): TableExportItem[] {
+  const items: TableExportItem[] = [];
+  const emittedImageBatches = new Set<string>();
+  for (const task of tableTasks.value) {
+    if (isPdfPath(task.path)) {
+      items.push({
+        fileName: task.fileName,
+        tables: displayTables(task.result ?? null, mergeCrossPageTables.value)
+      });
+      continue;
+    }
+    if (emittedImageBatches.has(task.batchId)) continue;
+    emittedImageBatches.add(task.batchId);
+    const batchTasks = tasks.value
+      .filter((item) => item.batchId === task.batchId && !isPdfPath(item.path))
+      .sort((left, right) => left.batchIndex - right.batchIndex);
+    const tables = batchTasks.length > 1
+      ? imageBatchTables(batchTasks.map((item) => item.result ?? null), mergeCrossPageTables.value)
+      : displayTables(task.result ?? null, mergeCrossPageTables.value);
+    if (tables.length) {
+      items.push({
+        fileName: batchTasks.length > 1 ? imageBatchExportName(batchTasks[0]) : task.fileName,
+        tables
+      });
+    }
+  }
+  return items;
+}
+
+async function exportSelectedFormats(): Promise<void> {
+  if (!canExportSelectedFormats.value) return;
+  const directory = await openLocalDialog({ directory: true, multiple: false, title: "选择导出文件夹" });
   if (typeof directory !== "string") return;
   if (!ocrSidecar.running && !(await startSidecar())) return;
+
   try {
-    const response = await ocrSidecar.request<{ count: number; tableCount: number }>(
-      "export_tables",
-      {
-        directory,
-        items: tableTasks.value.map((task) => ({
-          fileName: task.fileName,
-          tables: displayTables(task.result ?? null, mergeCrossPageTables.value)
-        }))
-      },
-      undefined,
-      2 * 60_000
-    );
-    status.value = `已导出 ${response.count} 份表格文件，共 ${response.tableCount} 个表格；每份包含 XLSX 和 HTML`;
+    const summaries: string[] = [];
+    if (exportTxt.value && exportableTasks.value.length) {
+      const response = await ocrSidecar.request<{ count: number }>(
+        "export_texts",
+        {
+          directory,
+          items: exportableTasks.value.map((task) => ({ fileName: task.fileName, text: task.result?.text ?? "" }))
+        },
+        undefined,
+        60_000
+      );
+      summaries.push(`TXT ${response.count} 个`);
+    }
+
+    const tableFormats = [exportXlsx.value ? "xlsx" : "", exportHtml.value ? "html" : ""].filter(Boolean);
+    const items = tableExportItems();
+    if (tableFormats.length && items.length) {
+      const response = await ocrSidecar.request<{ count: number; tableCount: number; formatCounts: Record<string, number> }>(
+        "export_tables",
+        { directory, items, formats: tableFormats },
+        undefined,
+        2 * 60_000
+      );
+      if (exportXlsx.value) summaries.push(`XLSX ${response.formatCounts.xlsx ?? response.count} 个`);
+      if (exportHtml.value) summaries.push(`HTML ${response.formatCounts.html ?? response.count} 个`);
+    }
+    status.value = `已导出 ${summaries.join("、")}，位置：${directory}`;
   } catch (error) {
     showError(error);
   }
@@ -563,7 +642,7 @@ function showError(error: unknown): void {
           <input id="threshold" v-model.number="scoreThreshold" type="range" min="0" max="1" step="0.05" :disabled="queueRunning" />
           <label v-if="recognitionMode === 'table'" class="merge-setting">
             <input v-model="mergeCrossPageTables" type="checkbox" />
-            <span>自动合并连续分页表格</span>
+            <span>合并 PDF 或同批图片的连续表格</span>
           </label>
           <button v-if="!queueRunning && !queuePaused" class="primary-button" :disabled="setupBusy || !queuedCount" @click="runQueue">开始批量识别</button>
           <div v-else class="control-grid">
@@ -572,8 +651,14 @@ function showError(error: unknown): void {
             <button class="danger-button" @click="cancelQueue">取消队列</button>
           </div>
           <button v-if="queueRunning" class="force-button" @click="forceStopQueue">长时间无响应？强制停止</button>
-          <button class="secondary-button export-button" :disabled="!exportableTasks.length || queueRunning" @click="exportAllText">导出全部 TXT</button>
-          <button class="secondary-button export-button" :disabled="!tableTasks.length || queueRunning" @click="exportAllTables">导出表格 XLSX + HTML</button>
+          <div class="export-options">
+            <span>导出格式</span>
+            <label><input v-model="exportTxt" type="checkbox" />TXT</label>
+            <label><input v-model="exportXlsx" type="checkbox" />XLSX</label>
+            <label><input v-model="exportHtml" type="checkbox" />HTML</label>
+          </div>
+          <button class="secondary-button export-button" :disabled="!canExportSelectedFormats" @click="exportSelectedFormats">导出所选格式</button>
+          <p v-if="!exportFormatSelected" class="export-hint">请至少选择一种格式。</p>
           <p class="pause-note">暂停和普通取消会在当前页识别结束后生效。</p>
         </div>
       </aside>
@@ -618,10 +703,10 @@ function showError(error: unknown): void {
           </div>
           <div v-if="selectedResult" class="result-body">
             <div class="metrics">
-              <div><b>{{ selectedResult.pageCount }} / {{ selectedResult.totalPageCount }}</b><span>已完成 / 总页数</span></div>
-              <div><b>{{ selectedResult.blockCount }}</b><span>文本块</span></div>
-              <div><b>{{ selectedTables.length }}</b><span>{{ mergeCrossPageTables && selectedResult.rawTableCount > selectedResult.tableCount ? `跨页合并（原 ${selectedResult.rawTableCount}）` : "表格" }}</span></div>
-              <div><b>{{ (selectedResult.elapsedMs / 1000).toFixed(2) }}s</b><span>用时</span></div>
+              <div><b>{{ selectedPageCount }} / {{ selectedTotalPageCount }}</b><span>{{ selectedUsesImageBatch ? "同批图片完成 / 总数" : "已完成 / 总页数" }}</span></div>
+              <div><b>{{ selectedBlockCount }}</b><span>文本块</span></div>
+              <div><b>{{ selectedTables.length }}</b><span>{{ mergeCrossPageTables && selectedRawTableCount > selectedMergedTableCount ? `跨页合并（原 ${selectedRawTableCount}）` : "表格" }}</span></div>
+              <div><b>{{ (selectedElapsedMs / 1000).toFixed(2) }}s</b><span>用时</span></div>
             </div>
             <textarea v-if="resultView === 'text'" :value="selectedResult.text" spellcheck="false" aria-label="识别文本" @input="updateSelectedText"></textarea>
             <TableResultViewer v-else :tables="selectedTables" />

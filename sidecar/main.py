@@ -192,8 +192,11 @@ class SidecarServer:
         elif method == "export_texts":
             result = export_text_results(str(params.get("directory") or ""), list(params.get("items") or []))
         elif method == "export_tables":
+            formats_value = params.get("formats")
             result = export_table_results(
-                str(params.get("directory") or ""), list(params.get("items") or [])
+                str(params.get("directory") or ""),
+                list(params.get("items") or []),
+                list(formats_value) if formats_value is not None else None,
             )
         elif method == "shutdown":
             self.shutdown()
