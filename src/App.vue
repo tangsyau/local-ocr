@@ -402,6 +402,16 @@ async function repairModels(name?: string): Promise<void> {
 
 async function runModelPreparation(repairNames?: string[] | null): Promise<boolean> {
   if (queueRunning.value || exportBusy.value || setupBusy.value) return false;
+  const changingLoadedModel = ocrSidecar.running
+    && preparedProfile.value !== null
+    && (preparedProfile.value !== modelProfile.value || preparedMode.value !== recognitionMode.value);
+  if (changingLoadedModel) {
+    status.value = "正在重启识别进程以安全切换模型……";
+    await ocrSidecar.forceStop();
+    preparedProfile.value = null;
+    preparedMode.value = null;
+    sidecarReady.value = false;
+  }
   if (!ocrSidecar.running) {
     sidecarReady.value = false;
     if (!(await startSidecar())) return false;
@@ -505,7 +515,7 @@ async function copyDiagnostics(): Promise<void> {
     }
   }
   const diagnostics: DiagnosticInfo = {
-    appVersion: "0.7.0",
+    appVersion: "0.7.1",
     sidecarRunning: ocrSidecar.running,
     sidecarStderr: ocrSidecar.stderr ? "运行日志已省略，以免复制文档路径或识别相关输出" : "",
     ...remote

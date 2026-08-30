@@ -1,6 +1,6 @@
 [package]
 name = "local-ocr"
-version = "0.7.0"
+version = "0.7.1"
 description = "A privacy-first local OCR desktop application"
 authors = ["Local OCR contributors"]
 edition = "2021"

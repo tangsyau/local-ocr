@@ -79,11 +79,11 @@ class ProjectConfigTests(unittest.TestCase):
             ROOT / "compat" / "webkitgtk-4.0" / "src-tauri" / "Cargo.toml"
         ).read_text(encoding="utf-8")
 
-        self.assertEqual(package["version"], "0.7.0")
+        self.assertEqual(package["version"], "0.7.1")
         self.assertEqual(standard_config["version"], package["version"])
         self.assertEqual(legacy_config["package"]["version"], package["version"])
-        self.assertIn('version = "0.7.0"', standard_cargo)
-        self.assertIn('version = "0.7.0"', legacy_cargo)
+        self.assertIn('version = "0.7.1"', standard_cargo)
+        self.assertIn('version = "0.7.1"', legacy_cargo)
 
     def test_frontend_and_protocol_support_batch_and_table_results(self) -> None:
         app = (ROOT / "src" / "App.vue").read_text(encoding="utf-8")

@@ -8,7 +8,7 @@ import { defaultSettings } from "./lib/session";
 const mock = vi.hoisted(() => ({
   running: true,
   saved: null as unknown,
-  load: vi.fn(), save: vi.fn(), request: vi.fn(), open: vi.fn(),
+  load: vi.fn(), save: vi.fn(), request: vi.fn(), open: vi.fn(), forceStop: vi.fn(),
   jobs: [] as Array<{ resolve: (value: unknown) => void; reject: (reason: Error) => void; onEvent?: (value: unknown) => void }>,
   exit: null as (() => void) | null,
   dropped: null as ((paths: string[]) => void) | null,
@@ -26,7 +26,7 @@ vi.mock("./lib/sidecar", () => ({
   SidecarRequestError: class extends Error {},
   ocrSidecar: {
     get running() { return mock.running; }, stderr: "",
-    start: async () => { mock.running = true; }, stop: async () => {}, forceStop: async () => { mock.running = false; },
+    start: async () => { mock.running = true; }, stop: async () => {}, forceStop: mock.forceStop,
     onExit: (callback: () => void) => { mock.exit = callback; return () => {}; },
     request: mock.request
   }
@@ -48,6 +48,7 @@ function button(text: string) {
 beforeEach(() => {
   vi.clearAllMocks();
   mock.jobs = []; mock.running = true; mock.counter = 0;
+  mock.forceStop.mockImplementation(async () => { mock.running = false; });
   mock.load.mockResolvedValue(null);
   mock.save.mockResolvedValue(undefined);
   mock.open.mockResolvedValue(["/one.png", "/two.png"]);
@@ -65,6 +66,16 @@ beforeEach(() => {
 afterEach(() => { wrapper?.unmount(); wrapper = null; vi.restoreAllMocks(); });
 
 describe("batch and recovery interactions", () => {
+  it("restarts the sidecar before switching an already-loaded native model", async () => {
+    wrapper = mount(App); await flushPromises();
+    await button("准备当前模型").trigger("click"); await flushPromises();
+    expect(mock.forceStop).not.toHaveBeenCalled();
+    await wrapper.find<HTMLInputElement>('input[value="table"]').setValue(true); await flushPromises();
+    await button("准备当前模型").trigger("click"); await flushPromises();
+    expect(mock.forceStop).toHaveBeenCalledOnce();
+    expect(mock.running).toBe(true);
+  });
+
   it("locks model controls and prevents duplicate starts during file preflight", async () => {
     wrapper = mount(App); await flushPromises();
     mock.dropped!(["/document.pdf"]); await flushPromises();

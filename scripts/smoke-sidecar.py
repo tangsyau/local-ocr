@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 import zlib
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -78,6 +79,121 @@ def write_utf8_stderr(value: str) -> None:
     sys.stderr.flush()
 
 
+def run_sidecar(
+    binary: Path,
+    request_lines: list[str],
+    request_timeout: int,
+    scenario: str,
+) -> tuple[dict[str, dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+    """Run one isolated model scenario and return its protocol messages.
+
+    Paddle's Windows native predictors are deliberately not switched repeatedly
+    inside this release test. Each profile/mode gets a fresh process, matching
+    the desktop client's safe model-switch behavior.
+    """
+
+    process = subprocess.Popen(
+        [str(binary)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+    )
+    assert process.stdin is not None and process.stdout is not None and process.stderr is not None
+    stdout_lines: queue.Queue[str | None] = queue.Queue()
+    stderr_tail: deque[str] = deque(maxlen=120)
+
+    def pump_stdout() -> None:
+        try:
+            for line in process.stdout:
+                stdout_lines.put(line)
+        finally:
+            stdout_lines.put(None)
+
+    def pump_stderr() -> None:
+        for line in process.stderr:
+            stderr_tail.append(line.rstrip())
+            write_utf8_stderr(line)
+
+    stdout_thread = threading.Thread(target=pump_stdout, daemon=True)
+    stderr_thread = threading.Thread(target=pump_stderr, daemon=True)
+    stdout_thread.start()
+    stderr_thread.start()
+    results: dict[str, dict[str, Any]] = {}
+    events: dict[str, list[dict[str, Any]]] = {}
+    current_request = "startup"
+
+    try:
+        for line in request_lines:
+            current_request = str(json.loads(line)["id"])
+            write_utf8_stderr(f"[smoke:{scenario}] starting {current_request}\n")
+            process.stdin.write(line + "\n")
+            process.stdin.flush()
+            deadline = time.monotonic() + request_timeout
+            last_event = ""
+            while current_request not in results:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    detail = "\n".join(stderr_tail)[-8000:] or "(sidecar produced no stderr)"
+                    raise TimeoutError(
+                        f"Sidecar timed out after {request_timeout}s while running "
+                        f"{current_request} ({scenario}); last event: {last_event or '(none)'}\n"
+                        f"Recent sidecar stderr:\n{detail}"
+                    )
+                try:
+                    output = stdout_lines.get(timeout=min(remaining, 5.0))
+                except queue.Empty:
+                    if process.poll() is not None:
+                        detail = "\n".join(stderr_tail)[-8000:]
+                        raise RuntimeError(
+                            f"Sidecar exited with code {process.returncode} before answering "
+                            f"{current_request} ({scenario})\n{detail}"
+                        )
+                    continue
+                if output is None:
+                    detail = "\n".join(stderr_tail)[-8000:]
+                    raise RuntimeError(
+                        f"Sidecar exited before answering {current_request} ({scenario})\n{detail}"
+                    )
+                try:
+                    message = json.loads(output)
+                except json.JSONDecodeError:
+                    continue
+                message_id = message.get("id")
+                if message_id and message.get("type") == "event":
+                    events.setdefault(str(message_id), []).append(message)
+                    if str(message_id) == current_request:
+                        last_event = str(message.get("message") or message.get("event") or "")
+                        if last_event:
+                            write_utf8_stderr(f"[smoke:{scenario}] {current_request}: {last_event}\n")
+                if message_id and message.get("type") in {"result", "error"}:
+                    results[str(message_id)] = message
+            if results[current_request].get("type") == "error":
+                raise RuntimeError(
+                    f"Sidecar smoke test failed in {scenario}/{current_request}: "
+                    f"{results[current_request]}"
+                )
+            write_utf8_stderr(f"[smoke:{scenario}] finished {current_request}\n")
+
+        process.stdin.close()
+        return_code = process.wait(timeout=60)
+        if return_code != 0:
+            raise RuntimeError(f"Sidecar exited with code {return_code} after {scenario}")
+        return results, events
+    finally:
+        if process.poll() is None:
+            process.kill()
+            try:
+                process.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                pass
+        stdout_thread.join(timeout=5)
+        stderr_thread.join(timeout=5)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Start the frozen OCR sidecar and verify its NDJSON protocol.")
     parser.add_argument(
@@ -95,7 +211,15 @@ def main() -> int:
         action="store_true",
         help="also load the lightweight table pipeline and run one local inference",
     )
+    parser.add_argument(
+        "--request-timeout",
+        type=int,
+        default=15 * 60,
+        help="maximum seconds for each protocol request (default: 900)",
+    )
     args = parser.parse_args()
+    if args.request_timeout < 30:
+        parser.error("--request-timeout must be at least 30 seconds")
 
     suffix = ".exe" if os.name == "nt" else ""
     binary = ROOT / "src-tauri" / "binaries" / f"ocr-sidecar-{target_triple()}{suffix}"
@@ -103,100 +227,59 @@ def main() -> int:
         raise FileNotFoundError(f"Sidecar not found: {binary}")
 
     with tempfile.TemporaryDirectory(prefix="local-ocr-smoke-") as temp_dir:
-        request_lines = [
+        base_requests = [
             request("smoke-ping", "ping"),
             request("smoke-runtime", "runtime_check"),
             request("smoke-model-status", "model_status", {"profile": "fast", "mode": "text"}),
             request("smoke-diagnostics", "diagnostics"),
         ]
+        scenarios: list[tuple[str, list[str]]] = []
         if args.prepare:
             image_path = Path(temp_dir) / "inference-smoke.png"
             write_smoke_png(image_path)
             profiles = ("fast", "accurate") if args.all_profiles else ("fast",)
-            for profile in profiles:
-                request_lines.append(
+            for index, profile in enumerate(profiles):
+                model_requests = list(base_requests if index == 0 else [request(f"smoke-ping-{profile}", "ping")])
+                model_requests.append(
                     request(
                         f"smoke-prepare-{profile}",
                         "prepare",
                         {"profile": profile, "mode": "text"},
                     )
                 )
-                request_lines.append(
+                model_requests.append(
                     request(
                         f"smoke-recognize-{profile}",
                         "recognize",
                         {"path": str(image_path), "scoreThreshold": 0.5, "mode": "text"},
                     )
                 )
+                model_requests.append(request(f"smoke-shutdown-{profile}", "shutdown"))
+                scenarios.append((f"text-{profile}", model_requests))
             if args.table:
-                request_lines.append(
+                scenarios.append(("table-fast", [
+                    request("smoke-ping-table", "ping"),
                     request(
                         "smoke-prepare-table",
                         "prepare",
                         {"profile": "fast", "mode": "table"},
-                    )
-                )
-                request_lines.append(
+                    ),
                     request(
                         "smoke-recognize-table",
                         "recognize",
                         {"path": str(image_path), "scoreThreshold": 0.5, "mode": "table"},
-                    )
-                )
-        request_lines.append(request("smoke-shutdown", "shutdown"))
-
-        process = subprocess.Popen(
-            [str(binary)],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
-        )
-        assert process.stdin is not None and process.stdout is not None and process.stderr is not None
-        stdout_lines: queue.Queue[str | None] = queue.Queue()
-
-        def pump_stdout() -> None:
-            for line in process.stdout:
-                stdout_lines.put(line)
-            stdout_lines.put(None)
-
-        def pump_stderr() -> None:
-            for line in process.stderr:
-                write_utf8_stderr(line)
-
-        stdout_thread = threading.Thread(target=pump_stdout, daemon=True)
-        stderr_thread = threading.Thread(target=pump_stderr, daemon=True)
-        stdout_thread.start()
-        stderr_thread.start()
+                    ),
+                    request("smoke-shutdown-table", "shutdown"),
+                ]))
+        else:
+            scenarios.append(("protocol", [*base_requests, request("smoke-shutdown", "shutdown")]))
 
         results: dict[str, dict[str, Any]] = {}
         events: dict[str, list[dict[str, Any]]] = {}
-        for line in request_lines:
-            request_id = str(json.loads(line)["id"])
-            process.stdin.write(line + "\n")
-            process.stdin.flush()
-            deadline = time.monotonic() + 20 * 60
-            while request_id not in results:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise TimeoutError(f"Sidecar did not finish {request_id}")
-                output = stdout_lines.get(timeout=remaining)
-                if output is None:
-                    raise RuntimeError(f"Sidecar exited before answering {request_id}")
-                try:
-                    message = json.loads(output)
-                except json.JSONDecodeError:
-                    continue
-                message_id = message.get("id")
-                if message_id and message.get("type") == "event":
-                    events.setdefault(str(message_id), []).append(message)
-                if message_id and message.get("type") in {"result", "error"}:
-                    results[str(message_id)] = message
-            if results[request_id].get("type") == "error":
-                raise RuntimeError(f"Sidecar smoke test failed: {results[request_id]}")
+        for scenario, lines in scenarios:
+            scenario_results, scenario_events = run_sidecar(binary, lines, args.request_timeout, scenario)
+            results.update(scenario_results)
+            events.update(scenario_events)
 
         if args.prepare:
             recognition_ids = [f"smoke-recognize-{profile}" for profile in profiles]
@@ -227,13 +310,6 @@ def main() -> int:
             raise RuntimeError(f"Invalid diagnostics result: {diagnostics}")
         if {"executable", "cacheRoot", "text", "stderr"} & set(diagnostics):
             raise RuntimeError("Diagnostics contains private fields")
-
-        process.stdin.close()
-        return_code = process.wait(timeout=60)
-        stdout_thread.join(timeout=5)
-        stderr_thread.join(timeout=5)
-        if return_code != 0:
-            raise RuntimeError(f"Sidecar exited with code {return_code}")
 
     print(f"Sidecar smoke test passed: {', '.join(sorted(results))}")
     return 0
