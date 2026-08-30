@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import io
+import os
 import threading
 import tempfile
 import unittest
@@ -82,16 +83,21 @@ class FakeTableResult:
 
 class EngineSchemaTests(unittest.TestCase):
     def test_progress_stream_preserves_binary_buffer_and_flushes_model_events(self) -> None:
-        binary = io.BytesIO()
-        stream = io.TextIOWrapper(binary, encoding="utf-8")
-        events = []
-        wrapped = ModelProgressStream(stream, ["model-A"], lambda *args: events.append(args))
-        self.assertIs(wrapped.buffer, binary)
-        wrapped.write("Creating model: model-")
-        wrapped.write("A\n")
-        self.assertEqual(binary.getvalue().decode(), "Creating model: model-A\n")
-        self.assertEqual(len(events), 1)
-        self.assertEqual(events[0][2], "model")
+        # Default text streams translate LF to the platform line ending. Exercise
+        # explicit LF and CRLF on every OS too, so Linux tests cover Windows bytes.
+        for newline, expected_ending in ((None, os.linesep), ("\n", "\n"), ("\r\n", "\r\n")):
+            with self.subTest(newline=newline):
+                binary = io.BytesIO()
+                with io.TextIOWrapper(binary, encoding="utf-8", newline=newline) as stream:
+                    events = []
+                    wrapped = ModelProgressStream(stream, ["model-A"], lambda *args: events.append(args))
+                    self.assertIs(wrapped.buffer, binary)
+                    wrapped.write("Creating model: model-")
+                    wrapped.write("A\n")
+                    # Check before close/flush: the wrapper must flush immediately.
+                    self.assertEqual(binary.getvalue(), ("Creating model: model-A" + expected_ending).encode("utf-8"))
+                    self.assertEqual(len(events), 1)
+                    self.assertEqual(events[0][2], "model")
 
     def test_runtime_cold_imports_run_once_on_main_thread(self) -> None:
         engine = OcrEngine()

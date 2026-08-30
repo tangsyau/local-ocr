@@ -4,7 +4,7 @@
 
 ## 当前功能
 
-当前版本为 **0.7.2：首次模型加载修订版**。没有新增快捷键；仅保留原有的专注模式 `Esc` 退出操作。
+当前版本为 **0.7.3：Windows 换行测试修订版**。没有新增快捷键；仅保留原有的专注模式 `Esc` 退出操作。
 
 - 批量选择 PNG、JPEG、WebP、BMP、TIFF 或 PDF，并按队列顺序识别；
 - 在“普通文字”和“表格与文字”两种模式之间切换；表格模式使用 TableRecognitionPipelineV2、PicoDet 表格版面检测和 SLANet_plus 轻量结构模型；
@@ -166,8 +166,8 @@ npm run tauri build
 工作流也会在推送 `v*` 标签时自动运行，例如：
 
 ```bash
-git tag v0.7.2
-git push origin v0.7.2
+git tag v0.7.3
+git push origin v0.7.3
 ```
 
 构建产物作为 Actions Artifact 保存 14 天。当前产物没有代码签名，因此 Windows 首次运行可能显示 SmartScreen 警告。正式公开发布前还应修改 `src-tauri/tauri.conf.json` 中的 `com.example.localocr` 标识，并配置 Windows 代码签名。
@@ -204,7 +204,15 @@ AppImage 仍然受 Linux 内核、glibc、显卡驱动及桌面环境等因素�
 
 布局检查使用模拟的原生接口，不替代真实 WebView/安装包检查；安装包启动检查也不等于全套人工验收。源码交付环境若未安装 Chromium、Windows 或对应 WebKitGTK，相关实机检查必须在 Actions/目标电脑执行。
 
-#### 0.7.2 首次模型准备超时排查
+#### 0.7.3 修复 Windows 源码测试的换行差异
+
+0.7.2 的 Actions 日志中，Windows 在 `Run source checks` 的输出流测试失败：实际为 `Creating model: model-A\r\n`，断言只接受 `\n`。这是测试未考虑 Windows 文本流默认换行转换，不是模型下载或 OCR 运行报错。0.7.3 按平台默认换行验证，并在每个平台显式覆盖 LF、CRLF；仍严格检查输出字节、即时刷新、底层 `.buffer` 和模型进度事件。
+
+同批两个 Linux 任务已通过源码测试，但在 PyInstaller 打包阶段记录 `The operation was canceled`，没有进入冻结包模型测试。日志没有说明取消来源，不能把取消当成打包异常或超时。工作流仍保留 `fail-fast: false`；本次不改依赖、模型缓存、构建超时或 OCR 逻辑。
+
+上传 0.7.3 后，请从新提交运行工作流，并让各平台任务运行至结束。下述首次模型准备问题仍需冻结包测试确认。
+
+#### 0.7.2 起保留的首次模型准备超时排查
 
 0.7.1 的 Windows 日志表明卡在第一个轻量文字 `prepare`，并未进入模型切换。没有线程栈之前，不能把它断定为切换模型或下载超时。0.7.2 将首次依赖导入移回主线程，修正输出流包装器误占用 `.buffer` 属性的问题；这些改动仍需在 Windows 冻结包中验证，单元测试不构成原生问题已解决的证明。
 
