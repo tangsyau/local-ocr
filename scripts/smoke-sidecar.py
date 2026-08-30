@@ -211,6 +211,9 @@ def main() -> int:
                 final_progress = progress_events[-1]
                 if final_progress.get("page") != 1 or final_progress.get("pageCount") != 1:
                     raise RuntimeError(f"Invalid OCR progress event: {final_progress}")
+                page_events = [event for event in events.get(request_id, []) if event.get("event") == "page_result"]
+                if len(page_events) != 1 or "tables" not in page_events[0].get("pageResult", {}):
+                    raise RuntimeError(f"Missing per-page recovery data: {request_id}")
             if args.table:
                 table_result = results["smoke-recognize-table"].get("result") or {}
                 if table_result.get("resultType") != "table" or "tableCount" not in table_result:
@@ -222,6 +225,8 @@ def main() -> int:
         diagnostics = results["smoke-diagnostics"].get("result") or {}
         if not diagnostics.get("python") or "packages" not in diagnostics:
             raise RuntimeError(f"Invalid diagnostics result: {diagnostics}")
+        if {"executable", "cacheRoot", "text", "stderr"} & set(diagnostics):
+            raise RuntimeError("Diagnostics contains private fields")
 
         process.stdin.close()
         return_code = process.wait(timeout=60)

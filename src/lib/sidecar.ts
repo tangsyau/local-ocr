@@ -1,4 +1,4 @@
-import type { SidecarEvent } from "./types";
+import type { OcrPage, SidecarEvent } from "./types";
 import { createId, createSidecarCommand, type SidecarChild } from "./tauri-bridge";
 
 interface ProtocolMessage {
@@ -10,6 +10,9 @@ interface ProtocolMessage {
   details?: string;
   page?: number;
   pageCount?: number;
+  pageResult?: OcrPage;
+  elapsedMs?: number;
+  category?: string;
 }
 
 interface PendingRequest {
@@ -20,17 +23,25 @@ interface PendingRequest {
 }
 
 export class SidecarRequestError extends Error {
-  constructor(message: string, readonly details = "") {
+  constructor(message: string, readonly details = "", readonly category = "unknown") {
     super(message);
     this.name = "SidecarRequestError";
   }
 }
 
-class OcrSidecarClient {
+export class OcrSidecarClient {
   private child: SidecarChild | null = null;
   private pending = new Map<string, PendingRequest>();
   private stdoutBuffer = "";
   private stderrTail = "";
+  private generation = 0;
+  private startPromise: Promise<void> | null = null;
+  private exitListeners = new Set<() => void>();
+
+  onExit(listener: () => void): () => void {
+    this.exitListeners.add(listener);
+    return () => this.exitListeners.delete(listener);
+  }
 
   get running(): boolean {
     return this.child !== null;
@@ -41,18 +52,38 @@ class OcrSidecarClient {
   }
 
   async start(): Promise<void> {
+    if (this.startPromise) return this.startPromise;
     if (this.child) return;
+    this.startPromise = this.startInternal();
+    try { await this.startPromise; } finally { this.startPromise = null; }
+  }
+
+  private async startInternal(): Promise<void> {
+    const generation = ++this.generation;
+    this.stdoutBuffer = "";
 
     this.stderrTail = "";
     const command = createSidecarCommand("binaries/ocr-sidecar");
-    command.stdout.on("data", (chunk) => this.consumeStdout(String(chunk)));
+    command.stdout.on("data", (chunk) => {
+      if (generation === this.generation) this.consumeStdout(String(chunk));
+    });
     command.stderr.on("data", (line) => {
+      if (generation !== this.generation) return;
       const text = String(line);
       this.stderrTail = `${this.stderrTail}${text}\n`.slice(-4_000);
       console.info(`[ocr-sidecar] ${text}`);
     });
-    command.on("error", (error) => this.failAll(new Error(String(error))));
+    command.on("error", (error) => {
+      if (generation !== this.generation) return;
+      const failedChild = this.child;
+      this.child = null;
+      this.generation += 1;
+      void failedChild?.kill().catch(() => {});
+      this.failAll(new Error(String(error)));
+      for (const listener of this.exitListeners) listener();
+    });
     command.on("close", ({ code }) => {
+      if (generation !== this.generation) return;
       this.child = null;
       const detail = this.stderrTail.trim();
       this.failAll(
@@ -60,10 +91,16 @@ class OcrSidecarClient {
           `OCR sidecar 已退出（代码 ${code ?? "unknown"}）${detail ? `：${detail}` : ""}`
         )
       );
+      for (const listener of this.exitListeners) listener();
     });
 
     try {
-      this.child = await command.spawn();
+      const spawned = await command.spawn();
+      if (generation !== this.generation) {
+        await spawned.kill().catch(() => {});
+        throw new Error("识别进程在启动期间已退出");
+      }
+      this.child = spawned;
       // A large PyInstaller onefile executable may need time to unpack on its
       // first launch, especially while antivirus software scans it.
       await this.request("ping", {}, undefined, 90_000);
@@ -91,15 +128,19 @@ class OcrSidecarClient {
     } catch {
       await child.kill();
     } finally {
+      this.generation += 1;
       this.child = null;
+      this.stdoutBuffer = "";
     }
   }
 
   async forceStop(): Promise<void> {
     const child = this.child;
     if (!child) return;
+    this.generation += 1;
     this.child = null;
     this.failAll(new Error("OCR sidecar 已被强制停止"));
+    this.stdoutBuffer = "";
     await child.kill();
   }
 
@@ -131,7 +172,7 @@ class OcrSidecarClient {
       const item = this.pending.get(id);
       if (item?.timer) clearTimeout(item.timer);
       this.pending.delete(id);
-      throw error;
+      item?.reject(error instanceof Error ? error : new Error(String(error)));
     }
     return promise;
   }
@@ -170,7 +211,9 @@ class OcrSidecarClient {
         event: message.event ?? "status",
         message: message.message,
         page: message.page,
-        pageCount: message.pageCount
+        pageCount: message.pageCount,
+        pageResult: message.pageResult,
+        elapsedMs: message.elapsedMs
       });
       return;
     }
@@ -178,7 +221,7 @@ class OcrSidecarClient {
     if (request.timer) clearTimeout(request.timer);
     this.pending.delete(message.id);
     if (message.type === "error") {
-      request.reject(new SidecarRequestError(message.message ?? "OCR sidecar 返回错误", message.details ?? ""));
+      request.reject(new SidecarRequestError(message.message ?? "OCR sidecar 返回错误", message.details ?? "", message.category ?? "unknown"));
     } else {
       request.resolve(message.result);
     }

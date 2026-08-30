@@ -7,9 +7,12 @@ import sys
 import threading
 import traceback
 from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
 from typing import Any
 
 from engine import OcrEngine, export_table_results, export_text_results, model_cache_status, official_model_cache
+from export_service import export_results, preview_exports
+from diagnostics import error_category, export_diagnostics, open_logs, record_event, safe_report
 
 
 EMIT_LOCK = threading.Lock()
@@ -24,12 +27,7 @@ def package_version(name: str) -> str | None:
 
 
 def diagnostic_info(engine: OcrEngine) -> dict[str, Any]:
-    return {
-        "platform": platform.platform(),
-        "python": sys.version.split()[0],
-        "frozen": bool(getattr(sys, "frozen", False)),
-        "executable": str(sys.executable),
-        "cacheRoot": str(official_model_cache().expanduser().resolve()),
+    return safe_report({
         "engineReady": engine.ready,
         "profile": engine.profile,
         "mode": engine.mode,
@@ -39,8 +37,7 @@ def diagnostic_info(engine: OcrEngine) -> dict[str, Any]:
             "paddlex": package_version("paddlex"),
             "pyinstaller": package_version("pyinstaller"),
         },
-        "processId": os.getpid(),
-    }
+    })
 
 
 def emit(message: dict[str, Any]) -> None:
@@ -97,6 +94,32 @@ class SidecarServer:
             self._worker = worker
             worker.start()
 
+    def start_prepare(self, request_id: str, params: dict[str, Any], repair: bool = False) -> None:
+        with self._worker_lock:
+            if self._worker is not None and self._worker.is_alive():
+                raise RuntimeError("已有模型准备或识别任务正在运行")
+            self._worker = threading.Thread(target=self._run_prepare, args=(request_id, params, repair), daemon=True)
+            self._worker.start()
+
+    def _run_prepare(self, request_id: str, params: dict[str, Any], repair: bool) -> None:
+        method = "repair_models" if repair else "prepare"
+        try:
+            profile, mode = str(params.get("profile") or "fast"), str(params.get("mode") or "text")
+            if not repair and params.get("reload"):
+                self.engine.unload()
+            moved = self.engine.quarantine_models(profile, mode, params.get("names")) if repair else []
+            result = self.engine.prepare(profile, mode, lambda message, page, event, count: self._progress(request_id, message, page, event, count))
+            response = {"id": request_id, "type": "result", "result": {**result, "quarantined": moved}}
+            record_event(method)
+        except Exception as error:
+            category = error_category(error)
+            record_event(method, category)
+            response = {"id": request_id, "type": "error", "message": str(error), "details": traceback.format_exc(limit=24), "category": category}
+        finally:
+            with self._worker_lock:
+                self._worker = None
+        emit(response)
+
     def _run_recognition(self, request_id: str, params: dict[str, Any]) -> None:
         response: dict[str, Any]
         try:
@@ -107,8 +130,13 @@ class SidecarServer:
                 lambda message, page, event, page_count: self._progress(
                     request_id, message, page, event, page_count
                 ),
+                on_page=lambda page, elapsed, total: emit({
+                    "id": request_id, "type": "event", "event": "page_result",
+                    "pageResult": page, "elapsedMs": elapsed, "pageCount": total,
+                }),
             )
             response = {"id": request_id, "type": "result", "result": result}
+            record_event("recognize", "cancelled" if result.get("cancelled") else "ok")
         except Exception as error:
             detail = traceback.format_exc(limit=24)
             sys.stderr.write(detail)
@@ -117,7 +145,9 @@ class SidecarServer:
                 "type": "error",
                 "message": str(error),
                 "details": detail,
+                "category": error_category(error),
             }
+            record_event("recognize", error_category(error))
         finally:
             with self._worker_lock:
                 self._worker = None
@@ -153,14 +183,9 @@ class SidecarServer:
             }
         elif method == "runtime_check":
             result = self.engine.check_native_runtime()
-        elif method == "prepare":
-            if self.active:
-                raise RuntimeError("识别期间不能切换模型")
-            result = self.engine.prepare(
-                str(params.get("profile") or "fast"),
-                str(params.get("mode") or "text"),
-                progress,
-            )
+        elif method in {"prepare", "repair_models"}:
+            self.start_prepare(request_id, params, repair=method == "repair_models")
+            return True
         elif method == "model_status":
             result = model_cache_status(
                 str(params.get("profile") or "fast"),
@@ -175,6 +200,33 @@ class SidecarServer:
             )
         elif method == "diagnostics":
             result = diagnostic_info(self.engine)
+        elif method == "open_logs":
+            result = open_logs()
+        elif method == "export_diagnostics":
+            result = export_diagnostics(str(params.get("directory") or ""), diagnostic_info(self.engine))
+        elif method == "validate_paths":
+            result = {"items": [{"id": str(item.get("id") or ""),
+                                  "exists": Path(str(item.get("path") or "")).is_file()}
+                                 for item in list(params.get("items") or [])]}
+        elif method == "export_preview":
+            result = preview_exports(params)
+        elif method == "export_results":
+            if self.active:
+                raise RuntimeError("请等待识别或模型准备结束再导出")
+            result = export_results(params)
+        elif method == "ui_smoke_status":
+            result = {"enabled": bool(os.environ.get("LOCAL_OCR_UI_SMOKE_DIR"))}
+        elif method == "ui_smoke_ready":
+            target = os.environ.get("LOCAL_OCR_UI_SMOKE_DIR")
+            if not target or not Path(target).is_dir():
+                raise ValueError("UI 测试未启用")
+            report = {"appVersion": "0.7.0", "sidecar": True,
+                      "width": int(params.get("width") or 0), "height": int(params.get("height") or 0),
+                      "sidebarFits": bool(params.get("sidebarFits"))}
+            marker = Path(target) / "ready.tmp"
+            marker.write_text(json.dumps(report), encoding="utf-8")
+            marker.replace(Path(target) / "ready.json")
+            result = {"ok": True}
         elif method == "recognize":
             self.start_recognition(request_id, params)
             return True
@@ -206,6 +258,8 @@ class SidecarServer:
             raise ValueError(f"未知方法：{method}")
 
         emit({"id": request_id, "type": "result", "result": result})
+        if method in {"delete_models", "export_results", "shutdown"}:
+            record_event(method)
         return True
 
 
@@ -217,12 +271,14 @@ def main() -> int:
     PROTOCOL_STDOUT = sys.stdout
 
     server = SidecarServer()
+    record_event("startup")
     emit({"id": None, "type": "event", "event": "ready", "message": "sidecar ready"})
 
     for line in sys.stdin:
         if not line.strip():
             continue
         request_id = ""
+        request: dict[str, Any] = {}
         try:
             request = json.loads(line)
             request_id = str(request.get("id") or "")
@@ -231,12 +287,14 @@ def main() -> int:
         except Exception as error:  # Keep the worker alive after a bad job.
             detail = traceback.format_exc(limit=24)
             sys.stderr.write(detail)
+            record_event(str(request.get("method") or "other"), error_category(error))
             emit(
                 {
                     "id": request_id,
                     "type": "error",
                     "message": str(error),
                     "details": detail,
+                    "category": error_category(error),
                 }
             )
     return 0

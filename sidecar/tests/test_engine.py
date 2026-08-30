@@ -126,12 +126,14 @@ class EngineSchemaTests(unittest.TestCase):
             model_dir = cache_root / "PP-OCRv5_mobile_det"
             model_dir.mkdir()
             (model_dir / "inference.json").write_bytes(b"model")
+            (model_dir / "inference.pdiparams").write_bytes(b"params")
+            (model_dir / "inference.yml").write_bytes(b"config")
             status = model_cache_status("fast", "text", cache_root)
 
         self.assertEqual(model_names("fast", "text"), ["PP-OCRv5_mobile_det", "PP-OCRv5_mobile_rec"])
         self.assertEqual(status["installedCount"], 1)
         self.assertFalse(status["installed"])
-        self.assertEqual(status["sizeBytes"], 5)
+        self.assertEqual(status["sizeBytes"], 17)
 
     def test_table_model_manifest_reuses_one_structure_model(self) -> None:
         names = model_names("fast", "table")

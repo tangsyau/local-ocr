@@ -3,7 +3,8 @@ import { nextTick, onBeforeUnmount, onMounted, onUpdated, ref, watch } from "vue
 import type { ComponentPublicInstance } from "vue";
 import type { OcrTable } from "../lib/types";
 
-const props = defineProps<{ tables: OcrTable[] }>();
+const props = defineProps<{ tables: OcrTable[]; viewKey?: string }>();
+const resultScroller = ref<HTMLElement | null>(null);
 
 const topScrollers = new Map<number, HTMLElement>();
 const bodyScrollers = new Map<number, HTMLElement>();
@@ -56,8 +57,13 @@ function resetScrollPositions(): void {
 
 watch(() => props.tables, async () => {
   await nextTick();
-  resetScrollPositions();
   measureAll();
+});
+
+watch(() => props.viewKey, async () => {
+  await nextTick();
+  resetScrollPositions();
+  if (resultScroller.value) resultScroller.value.scrollTop = 0;
 });
 
 onMounted(() => {
@@ -78,10 +84,10 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="table-results" tabindex="0" aria-label="表格识别结果，可上下滚动">
+  <div ref="resultScroller" class="table-results" tabindex="0" aria-label="表格识别结果，可上下滚动">
     <section
       v-for="(table, tableListIndex) in tables"
-      :key="`${table.pageIndex}-${table.endPageIndex}-${table.tableIndex}-${tableListIndex}`"
+      :key="`${table.pageIndex}-${table.tableIndex}-${tableListIndex}`"
       class="table-card"
     >
       <div class="table-card-header">

@@ -1,7 +1,7 @@
 {
   "name": "local-ocr",
   "private": true,
-  "version": "0.6.1",
+  "version": "0.7.0",
   "type": "module",
   "scripts": {
     "dev": "vite --port 1420",
@@ -12,7 +12,8 @@
     "sidecar:smoke": "python scripts/smoke-sidecar.py",
     "sidecar:stage-webkit4": "python scripts/stage-webkit4-sidecar.py",
     "test:python": "python -m unittest discover -s sidecar/tests -v",
-    "test:ui": "vitest run"
+    "test:ui": "vitest run",
+    "test:layout": "node scripts/check-ui-layout.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",

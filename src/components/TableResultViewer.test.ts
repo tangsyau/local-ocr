@@ -57,6 +57,23 @@ describe("TableResultViewer", () => {
     expect(tableToTsv(table)).toBe("列 1\t列 2\n1-0\t1-1");
   });
 
+  it("keeps the viewing position when another PDF page is appended", async () => {
+    const first = wideTallTable();
+    const wrapper = mount(TableResultViewer, { props: { tables: [first], viewKey: "document-one" } });
+    const body = wrapper.find<HTMLElement>(".table-scroll");
+    const top = wrapper.find<HTMLElement>(".table-top-scroll");
+    top.element.scrollLeft = 360;
+    await top.trigger("scroll");
+    wrapper.find<HTMLElement>(".table-results").element.scrollTop = 180;
+    await wrapper.setProps({ tables: [{ ...first, endPageIndex: 1 }, { ...wideTallTable(), pageIndex: 2 }] });
+    expect(wrapper.find<HTMLElement>(".table-scroll").element).toBe(body.element);
+    expect(body.element.scrollLeft).toBe(360);
+    expect(wrapper.find<HTMLElement>(".table-results").element.scrollTop).toBe(180);
+    await wrapper.setProps({ viewKey: "document-two" });
+    await nextTick();
+    expect(body.element.scrollLeft).toBe(0);
+  });
+
   it("switches between merged and raw per-page tables without re-recognition", () => {
     const first = wideTallTable();
     const second = { ...wideTallTable(), pageIndex: 1, endPageIndex: 1 };

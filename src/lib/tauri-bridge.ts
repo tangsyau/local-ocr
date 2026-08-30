@@ -1,6 +1,7 @@
-import { convertFileSrc as convertFileSrcV2 } from "@tauri-apps/api/core";
+import { convertFileSrc as convertFileSrcV2, invoke } from "@tauri-apps/api/core";
 import { open as openV2 } from "@tauri-apps/plugin-dialog";
 import { Command as CommandV2 } from "@tauri-apps/plugin-shell";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 export interface OpenDialogFilter {
   name: string;
@@ -32,6 +33,13 @@ export interface SidecarCommand {
 }
 
 interface LegacyTauriGlobal {
+  window: {
+    appWindow: {
+      onFileDropEvent(handler: (event: { payload: { type: string; paths?: string[] } }) => void): Promise<() => void>;
+      onCloseRequested(handler: (event: { preventDefault(): void }) => void | Promise<void>): Promise<() => void>;
+      close(): Promise<void>;
+    };
+  };
   dialog: {
     open(options?: OpenDialogOptions): Promise<string | string[] | null>;
   };
@@ -65,6 +73,11 @@ export function convertLocalFileSrc(path: string): string {
     : convertFileSrcV2(path);
 }
 
+export async function localImagePreview(path: string): Promise<string> {
+  const allowedPath = isWebkitGtk40Build ? path : await invoke<string>("allow_image_preview", { path });
+  return convertLocalFileSrc(allowedPath);
+}
+
 export async function openLocalDialog(
   options: OpenDialogOptions
 ): Promise<string | string[] | null> {
@@ -81,4 +94,31 @@ export function createId(): string {
   if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
   const random = crypto.getRandomValues(new Uint32Array(4));
   return `${Date.now().toString(36)}-${Array.from(random, (value) => value.toString(36)).join("-")}`;
+}
+
+export async function listenFileDrop(handler: (paths: string[]) => void): Promise<() => void> {
+  if (isWebkitGtk40Build) return legacyTauri().window.appWindow.onFileDropEvent((event) => {
+    if (event.payload.type === "drop") handler(event.payload.paths ?? []);
+  });
+  return getCurrentWindow().onDragDropEvent((event) => {
+    if (event.payload.type === "drop") handler(event.payload.paths);
+  });
+}
+
+export async function listenBeforeClose(handler: () => Promise<boolean>): Promise<() => void> {
+  const appWindow = isWebkitGtk40Build ? legacyTauri().window.appWindow : getCurrentWindow();
+  let closing = false;
+  let unlisten: () => void = () => {};
+  unlisten = await appWindow.onCloseRequested(async (event) => {
+    event.preventDefault();
+    if (closing) return;
+    closing = true;
+    try {
+      if (await handler()) {
+        unlisten();
+        await appWindow.close();
+      }
+    } finally { closing = false; }
+  });
+  return unlisten;
 }

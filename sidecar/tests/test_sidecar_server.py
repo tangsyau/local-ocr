@@ -32,8 +32,10 @@ class FakeEngine:
         self.pause_called = False
         self.cancel_called = False
 
-    def recognize(self, path: str, score: float, mode: str, progress: Any) -> dict[str, Any]:
+    def recognize(self, path: str, score: float, mode: str, progress: Any, on_page: Any = None) -> dict[str, Any]:
         self.started.set()
+        if on_page:
+            on_page({"pageIndex": 0, "text": "ok", "blocks": [], "tables": []}, 1, 3)
         progress("已完成第 1/3 页（33%）", 1, "progress", 3)
         self.release.wait(timeout=2)
         return {
@@ -62,6 +64,34 @@ class FakeEngine:
 
 
 class SidecarServerTests(unittest.TestCase):
+    def test_model_status_remains_responsive_during_preparation(self) -> None:
+        server = sidecar_main.SidecarServer()
+        entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+        messages: list[dict[str, Any]] = []
+
+        def prepare(profile: str, mode: str, progress: Any) -> dict[str, Any]:
+            entered.set()
+            release.wait(timeout=2)
+            return {"ready": True}
+
+        def collect(message: dict[str, Any]) -> None:
+            messages.append(message)
+            if message.get("id") == "prepare" and message.get("type") == "result":
+                finished.set()
+
+        with (patch.object(server.engine, "prepare", side_effect=prepare),
+              patch.object(sidecar_main, "emit", side_effect=collect),
+              patch.object(sidecar_main, "model_cache_status", return_value={"models": []})):
+            server.handle({"id": "prepare", "method": "prepare"})
+            try:
+                self.assertTrue(entered.wait(timeout=1))
+                server.handle({"id": "status", "method": "model_status"})
+                self.assertTrue(server.active)
+                self.assertTrue(any(message.get("id") == "status" for message in messages))
+            finally:
+                release.set()
+                self.assertTrue(finished.wait(timeout=2))
+
     def test_protocol_output_bypasses_paddle_stdout_redirect(self) -> None:
         protocol_output = io.StringIO()
         paddle_output = io.StringIO()
@@ -113,6 +143,9 @@ class SidecarServerTests(unittest.TestCase):
         self.assertTrue(result["result"]["cancelled"])
         self.assertEqual(progress["page"], 1)
         self.assertEqual(progress["pageCount"], 3)
+        page_result = next(message for message in messages if message.get("event") == "page_result")
+        self.assertEqual(page_result["pageResult"]["text"], "ok")
+        self.assertEqual(page_result["pageCount"], 3)
 
 
 if __name__ == "__main__":

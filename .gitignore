@@ -1,4 +1,5 @@
 node_modules/
+test-results/
 dist/
 dist-webkit4/
 .venv/

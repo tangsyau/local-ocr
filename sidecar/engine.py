@@ -11,6 +11,7 @@ import shutil
 import sys
 import threading
 import time
+import uuid
 from difflib import SequenceMatcher
 from html.parser import HTMLParser
 from pathlib import Path
@@ -78,10 +79,20 @@ def model_cache_status(
     for name in model_names(profile, mode):
         model_path = root / name
         size, file_count = _tree_stats(model_path)
+        def nonempty(filename: str) -> bool:
+            candidate = model_path / filename
+            try:
+                return candidate.is_file() and not candidate.is_symlink() and candidate.stat().st_size > 0
+            except OSError:
+                return False
+        installed = not model_path.is_symlink() and nonempty("inference.pdiparams") and (
+            nonempty("inference.json") or nonempty("inference.pdmodel")
+        ) and nonempty("inference.yml")
         entries.append(
             {
                 "name": name,
-                "installed": model_path.is_dir() and not model_path.is_symlink() and file_count > 0,
+                "installed": installed,
+                "state": "ready" if installed else "incomplete" if file_count else "missing",
                 "sizeBytes": size,
                 "fileCount": file_count,
             }
@@ -96,6 +107,28 @@ def model_cache_status(
         "installedCount": sum(bool(item["installed"]) for item in entries),
         "models": entries,
     }
+
+
+class ModelProgressStream:
+    def __init__(self, stream: Any, names: list[str], callback: ProgressCallback | None):
+        self.stream, self.names, self.callback = stream, names, callback
+        self.buffer = ""
+        self.last_name = ""
+
+    def write(self, value: str) -> int:
+        result = self.stream.write(value)
+        self.buffer = (self.buffer + value)[-2000:]
+        for name in self.names:
+            if name in self.buffer and name != self.last_name:
+                self.last_name = name
+                self.buffer = ""
+                if self.callback:
+                    self.callback(f"正在下载或载入模型：{name}", None, "model", None)
+                break
+        return result
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.stream, name)
 
 
 class TableHtmlParser(HTMLParser):
@@ -485,6 +518,30 @@ class OcrEngine:
             "status": model_cache_status(profile, mode, root),
         }
 
+    def quarantine_models(self, profile: str, mode: str, names: list[str] | None = None) -> list[str]:
+        root = official_model_cache().expanduser().resolve()
+        allowed = set(model_names(profile, mode))
+        chosen = set(names) if names is not None else {
+            item["name"] for item in model_cache_status(profile, mode, root)["models"] if not item["installed"]
+        }
+        if chosen - allowed:
+            raise ValueError("只能修复当前组合的官方模型")
+        self.unload()
+        moved = []
+        for name in sorted(chosen):
+            target = root / name
+            if target.is_symlink() or (target.exists() and not target.is_dir()):
+                raise ValueError("拒绝修复符号链接或非目录模型缓存")
+            if not target.exists():
+                continue
+            backup_root = root / ".local-ocr-backups"
+            if backup_root.is_symlink():
+                raise ValueError("模型备份目录不能是符号链接")
+            backup_root.mkdir(parents=True, exist_ok=True)
+            target.rename(backup_root / f"{name}-{uuid.uuid4().hex[:12]}")
+            moved.append(name)
+        return moved
+
     def prepare(
         self,
         profile: str = "fast",
@@ -513,7 +570,8 @@ class OcrEngine:
             self.unload()
 
         # PaddleOCR may emit progress information. Keep stdout reserved for NDJSON.
-        with contextlib.redirect_stdout(sys.stderr):
+        progress_stream = ModelProgressStream(sys.stderr, model_names(profile, mode), progress)
+        with contextlib.redirect_stdout(progress_stream), contextlib.redirect_stderr(progress_stream):
             if mode == "table":
                 from paddleocr import TableRecognitionPipelineV2
 
@@ -585,6 +643,7 @@ class OcrEngine:
         score_threshold: float = 0.5,
         mode: str = "text",
         progress: ProgressCallback | None = None,
+        on_page: Callable[[dict[str, Any], int, int], None] | None = None,
     ) -> dict[str, Any]:
         path = Path(path_value).expanduser().resolve(strict=True)
         if not path.is_file():
@@ -638,7 +697,14 @@ class OcrEngine:
             results = self._ocr.predict_iter(**predict_options)
             for page_number, result in enumerate(results, start=1):
                 page = extract_table_page(result) if mode == "table" else extract_page(result)
+                if page.get("pageIndex") is None:
+                    page["pageIndex"] = page_number - 1
+                for table in page["tables"]:
+                    table["pageIndex"] = page["pageIndex"]
+                    table["endPageIndex"] = page["pageIndex"]
                 pages.append(page)
+                if on_page:
+                    on_page(page, round((time.perf_counter() - started) * 1000), total_page_count)
                 if progress:
                     percent = round(page_number / total_page_count * 100)
                     detail = (
@@ -765,6 +831,10 @@ def export_table_results(
                 else f"P{page_number}"
             )
             base_title = f"{page_token}-T{table_number}"[:31]
+            source_label = str(table.get("sourceName") or "")
+            if source_label:
+                short_source = re.sub(r"[\\/\[\]:*?]", "_", source_label)[:16]
+                base_title = f"{short_source}-{base_title}"[:31]
             title = base_title
             suffix = 2
             if workbook is not None:
@@ -786,6 +856,8 @@ def export_table_results(
                         col_span = max(1, int(cell.get("colSpan") or 1))
                         target = sheet.cell(row=row_index, column=column_index)
                         target.value = str(cell.get("text") or "")
+                        # OCR text is data, never an Excel formula.
+                        target.data_type = "s"
                         target.alignment = Alignment(vertical="center", wrap_text=True)
                         if row_index == 1:
                             target.font = Font(bold=True)
@@ -807,7 +879,7 @@ def export_table_results(
             if html_path is not None:
                 table_html = safe_table_html(rows)
                 html_sections.append(
-                    f"<section><h2>{page_label} · 表格 {table_number}</h2>{table_html}</section>"
+                    f"<section><h2>{html.escape(source_label)} {page_label} · 表格 {table_number}</h2>{table_html}</section>"
                 )
 
         file_result: dict[str, Any] = {"source": source_name, "tableCount": len(tables)}

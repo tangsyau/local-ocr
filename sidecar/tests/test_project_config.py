@@ -10,6 +10,16 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class ProjectConfigTests(unittest.TestCase):
+    def test_release_checks_include_native_packages_and_window_close_permissions(self) -> None:
+        capability = json.loads((ROOT / "src-tauri/capabilities/default.json").read_text(encoding="utf-8"))
+        legacy = json.loads((ROOT / "compat/webkitgtk-4.0/src-tauri/tauri.conf.json").read_text(encoding="utf-8"))
+        workflow = (ROOT / ".github/workflows/build-desktop.yml").read_text(encoding="utf-8")
+        self.assertIn("core:window:allow-close", capability["permissions"])
+        self.assertTrue(legacy["tauri"]["allowlist"]["window"]["close"])
+        self.assertEqual(workflow.count("scripts/smoke-desktop.py --bundle-dir"), 3)
+        self.assertIn("npm run test:layout", workflow)
+        self.assertIn("test-results/layout/*.png", workflow)
+
     def test_sidecar_names_match_across_tauri_scope_and_frontend(self) -> None:
         tauri_config = json.loads(
             (ROOT / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8")
@@ -69,11 +79,11 @@ class ProjectConfigTests(unittest.TestCase):
             ROOT / "compat" / "webkitgtk-4.0" / "src-tauri" / "Cargo.toml"
         ).read_text(encoding="utf-8")
 
-        self.assertEqual(package["version"], "0.6.1")
+        self.assertEqual(package["version"], "0.7.0")
         self.assertEqual(standard_config["version"], package["version"])
         self.assertEqual(legacy_config["package"]["version"], package["version"])
-        self.assertIn('version = "0.6.1"', standard_cargo)
-        self.assertIn('version = "0.6.1"', legacy_cargo)
+        self.assertIn('version = "0.7.0"', standard_cargo)
+        self.assertIn('version = "0.7.0"', legacy_cargo)
 
     def test_frontend_and_protocol_support_batch_and_table_results(self) -> None:
         app = (ROOT / "src" / "App.vue").read_text(encoding="utf-8")
@@ -95,7 +105,7 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertIn("PROTOCOL_STDOUT.write", sidecar)
         self.assertIn("Sidecar did not emit OCR progress events", smoke)
         self.assertIn("表格与文字", app)
-        self.assertIn('"export_tables",', app)
+        self.assertIn('"export_results",', app)
         self.assertIn("OcrTableCell", types)
         self.assertIn('method == "export_tables"', sidecar)
         self.assertIn("--table", smoke)
@@ -113,7 +123,7 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertIn("合并 PDF 或同批图片的连续表格", app)
         self.assertIn("imageBatchTables", app)
         self.assertIn("导出所选格式", app)
-        self.assertIn('formats: tableFormats', app)
+        self.assertIn('formats: outputFormats()', app)
         run_queue = app.split("async function runQueue", 1)[1].split("async function pauseQueue", 1)[0]
         self.assertNotIn("selectedTaskId.value = task.id", run_queue)
         table_header_style = styles.split(".table-card-header", 1)[1].split("}", 1)[0]

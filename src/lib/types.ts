@@ -53,6 +53,8 @@ export interface SidecarEvent {
   message?: string;
   page?: number;
   pageCount?: number;
+  pageResult?: OcrPage;
+  elapsedMs?: number;
 }
 
 export interface ModelCacheEntry {
@@ -60,6 +62,7 @@ export interface ModelCacheEntry {
   installed: boolean;
   sizeBytes: number;
   fileCount: number;
+  state?: "ready" | "incomplete" | "missing";
 }
 
 export interface ModelCacheStatus {
@@ -111,4 +114,8 @@ export interface OcrTask {
   result?: OcrResult;
   error?: string;
   resultType: RecognitionMode;
+  missing?: boolean;
+  revision?: number;
+  exportedRevision?: number;
+  textEdited?: boolean;
 }
