@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import faulthandler
 import os
 import platform
 import sys
@@ -17,6 +18,19 @@ from diagnostics import error_category, export_diagnostics, open_logs, record_ev
 
 EMIT_LOCK = threading.Lock()
 PROTOCOL_STDOUT = sys.stdout
+TRACE_STDERR = sys.stderr
+
+
+def start_prepare_trace() -> None:
+    # Opt-in release-test tracing only, never the user's saved diagnostic log.
+    # faulthandler uses a native watchdog, so a blocked Python thread can be seen.
+    if os.environ.get("LOCAL_OCR_CI_PREPARE_TRACE") == "1":
+        faulthandler.dump_traceback_later(60, repeat=True, file=TRACE_STDERR)
+
+
+def stop_prepare_trace() -> None:
+    if os.environ.get("LOCAL_OCR_CI_PREPARE_TRACE") == "1":
+        faulthandler.cancel_dump_traceback_later()
 
 
 def package_version(name: str) -> str | None:
@@ -54,11 +68,12 @@ class SidecarServer:
         self.engine = OcrEngine()
         self._worker: threading.Thread | None = None
         self._worker_lock = threading.Lock()
+        self._initializing = False
 
     @property
     def active(self) -> bool:
         with self._worker_lock:
-            return self._worker is not None and self._worker.is_alive()
+            return self._initializing or (self._worker is not None and self._worker.is_alive())
 
     def _progress(
         self,
@@ -82,7 +97,7 @@ class SidecarServer:
 
     def start_recognition(self, request_id: str, params: dict[str, Any]) -> None:
         with self._worker_lock:
-            if self._worker is not None and self._worker.is_alive():
+            if self._initializing or (self._worker is not None and self._worker.is_alive()):
                 raise RuntimeError("已有识别任务正在运行")
             self.engine.reset_job_control()
             worker = threading.Thread(
@@ -96,10 +111,23 @@ class SidecarServer:
 
     def start_prepare(self, request_id: str, params: dict[str, Any], repair: bool = False) -> None:
         with self._worker_lock:
-            if self._worker is not None and self._worker.is_alive():
+            if self._initializing or (self._worker is not None and self._worker.is_alive()):
                 raise RuntimeError("已有模型准备或识别任务正在运行")
-            self._worker = threading.Thread(target=self._run_prepare, args=(request_id, params, repair), daemon=True)
-            self._worker.start()
+            self._initializing = True
+        try:
+            start_prepare_trace()
+            self.engine.initialize_runtime(
+                lambda message, page, event, count: self._progress(request_id, message, page, event, count)
+            )
+            with self._worker_lock:
+                self._worker = threading.Thread(target=self._run_prepare, args=(request_id, params, repair), name="model-prepare", daemon=True)
+                self._worker.start()
+        except BaseException:
+            stop_prepare_trace()
+            raise
+        finally:
+            with self._worker_lock:
+                self._initializing = False
 
     def _run_prepare(self, request_id: str, params: dict[str, Any], repair: bool) -> None:
         method = "repair_models" if repair else "prepare"
@@ -116,6 +144,7 @@ class SidecarServer:
             record_event(method, category)
             response = {"id": request_id, "type": "error", "message": str(error), "details": traceback.format_exc(limit=24), "category": category}
         finally:
+            stop_prepare_trace()
             with self._worker_lock:
                 self._worker = None
         emit(response)
@@ -220,7 +249,7 @@ class SidecarServer:
             target = os.environ.get("LOCAL_OCR_UI_SMOKE_DIR")
             if not target or not Path(target).is_dir():
                 raise ValueError("UI 测试未启用")
-            report = {"appVersion": "0.7.1", "sidecar": True,
+            report = {"appVersion": "0.7.2", "sidecar": True,
                       "width": int(params.get("width") or 0), "height": int(params.get("height") or 0),
                       "sidebarFits": bool(params.get("sidebarFits"))}
             marker = Path(target) / "ready.tmp"

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sys
+import io
+import threading
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,6 +14,7 @@ sys.path.insert(0, str(SIDECAR_DIR))
 
 from engine import (  # noqa: E402
     MODEL_PROFILES,
+    ModelProgressStream,
     OcrEngine,
     document_page_count,
     export_table_results,
@@ -78,6 +81,45 @@ class FakeTableResult:
 
 
 class EngineSchemaTests(unittest.TestCase):
+    def test_progress_stream_preserves_binary_buffer_and_flushes_model_events(self) -> None:
+        binary = io.BytesIO()
+        stream = io.TextIOWrapper(binary, encoding="utf-8")
+        events = []
+        wrapped = ModelProgressStream(stream, ["model-A"], lambda *args: events.append(args))
+        self.assertIs(wrapped.buffer, binary)
+        wrapped.write("Creating model: model-")
+        wrapped.write("A\n")
+        self.assertEqual(binary.getvalue().decode(), "Creating model: model-A\n")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0][2], "model")
+
+    def test_runtime_cold_imports_run_once_on_main_thread(self) -> None:
+        engine = OcrEngine()
+        events = []
+        original_stdout = sys.stdout
+        with patch.dict(sys.modules, {
+            "paddle": SimpleNamespace(),
+            "paddleocr": SimpleNamespace(PaddleOCR=object, TableRecognitionPipelineV2=object),
+        }):
+            engine.initialize_runtime(lambda *args: events.append(args))
+            engine.initialize_runtime(lambda *args: events.append(args))
+        self.assertEqual([entry[2] for entry in events], ["import_paddle", "import_paddleocr", "imports_ready"])
+        self.assertIs(sys.stdout, original_stdout)
+
+    def test_runtime_cold_imports_are_rejected_in_worker(self) -> None:
+        errors = []
+        def attempt() -> None:
+            try:
+                OcrEngine().initialize_runtime()
+            except RuntimeError as error:
+                errors.append(str(error))
+        worker = threading.Thread(target=attempt)
+        worker.start()
+        worker.join(timeout=2)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(len(errors), 1)
+        self.assertIn("主线程", errors[0])
+
     def test_extract_page_returns_stable_schema(self) -> None:
         page = extract_page(FakeResult())
         self.assertEqual(page["pageIndex"], 2)

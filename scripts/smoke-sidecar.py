@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import queue
+import signal
 import struct
 import subprocess
 import sys
@@ -101,10 +102,17 @@ def run_sidecar(
         encoding="utf-8",
         errors="replace",
         bufsize=1,
+        env={**os.environ, "LOCAL_OCR_CI_PREPARE_TRACE": "1"},
+        start_new_session=os.name != "nt",
     )
     assert process.stdin is not None and process.stdout is not None and process.stderr is not None
     stdout_lines: queue.Queue[str | None] = queue.Queue()
     stderr_tail: deque[str] = deque(maxlen=120)
+    stderr_lock = threading.Lock()
+
+    def recent_stderr() -> str:
+        with stderr_lock:
+            return "\n".join(stderr_tail)[-8000:]
 
     def pump_stdout() -> None:
         try:
@@ -115,7 +123,8 @@ def run_sidecar(
 
     def pump_stderr() -> None:
         for line in process.stderr:
-            stderr_tail.append(line.rstrip())
+            with stderr_lock:
+                stderr_tail.append(line.rstrip())
             write_utf8_stderr(line)
 
     stdout_thread = threading.Thread(target=pump_stdout, daemon=True)
@@ -132,29 +141,38 @@ def run_sidecar(
             write_utf8_stderr(f"[smoke:{scenario}] starting {current_request}\n")
             process.stdin.write(line + "\n")
             process.stdin.flush()
-            deadline = time.monotonic() + request_timeout
+            started = time.monotonic()
+            deadline = started + request_timeout
+            next_heartbeat = started + 30
             last_event = ""
             while current_request not in results:
-                remaining = deadline - time.monotonic()
+                now = time.monotonic()
+                remaining = deadline - now
                 if remaining <= 0:
-                    detail = "\n".join(stderr_tail)[-8000:] or "(sidecar produced no stderr)"
+                    detail = recent_stderr() or "(sidecar produced no stderr)"
                     raise TimeoutError(
                         f"Sidecar timed out after {request_timeout}s while running "
                         f"{current_request} ({scenario}); last event: {last_event or '(none)'}\n"
                         f"Recent sidecar stderr:\n{detail}"
                     )
+                if now >= next_heartbeat:
+                    write_utf8_stderr(
+                        f"[smoke:{scenario}] waiting {round(now-started)}s for {current_request}; "
+                        f"last event: {last_event or '(none)'}\n"
+                    )
+                    next_heartbeat = now + 30
                 try:
                     output = stdout_lines.get(timeout=min(remaining, 5.0))
                 except queue.Empty:
                     if process.poll() is not None:
-                        detail = "\n".join(stderr_tail)[-8000:]
+                        detail = recent_stderr()
                         raise RuntimeError(
                             f"Sidecar exited with code {process.returncode} before answering "
                             f"{current_request} ({scenario})\n{detail}"
                         )
                     continue
                 if output is None:
-                    detail = "\n".join(stderr_tail)[-8000:]
+                    detail = recent_stderr()
                     raise RuntimeError(
                         f"Sidecar exited before answering {current_request} ({scenario})\n{detail}"
                     )
@@ -185,13 +203,38 @@ def run_sidecar(
         return results, events
     finally:
         if process.poll() is None:
-            process.kill()
-            try:
-                process.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                pass
+            stop_sidecar_tree(process)
         stdout_thread.join(timeout=5)
         stderr_thread.join(timeout=5)
+        if not stdout_thread.is_alive():
+            process.stdout.close()
+        if not stderr_thread.is_alive():
+            process.stderr.close()
+        try:
+            process.stdin.close()
+        except OSError:
+            pass
+
+
+def stop_sidecar_tree(process: subprocess.Popen) -> None:
+    """Stop only this test's process tree, including the PyInstaller child."""
+    if os.name == "nt":
+        try:
+            subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                           check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        if process.poll() is None:
+            process.kill()
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    try:
+        process.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        pass
 
 
 def main() -> int:

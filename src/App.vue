@@ -424,8 +424,11 @@ async function runModelPreparation(repairNames?: string[] | null): Promise<boole
   const modeLabel = recognitionMode.value === "table" ? "表格与文字" : "普通文字";
   status.value = `正在准备${modeLabel}模式的${profileLabel}模型，首次运行可能需要下载……`;
   let checking = false;
+  let importsFinished = false;
   const poll = setInterval(async () => {
-    if (checking) return;
+    // Cold imports temporarily occupy the Python command thread. Do not fill its
+    // stdin queue with cache queries until it starts the background model worker.
+    if (checking || !importsFinished) return;
     checking = true;
     try { await refreshModelStatus(); } finally { checking = false; }
   }, 2000);
@@ -433,7 +436,10 @@ async function runModelPreparation(repairNames?: string[] | null): Promise<boole
     await ocrSidecar.request(
       repairNames === undefined ? "prepare" : "repair_models",
       { profile: modelProfile.value, mode: recognitionMode.value, reload: true, ...(repairNames ? { names: repairNames } : {}) },
-      updateGlobalStatus,
+      (event) => {
+        if (["imports_ready", "create_pipeline", "model"].includes(event.event)) importsFinished = true;
+        updateGlobalStatus(event);
+      },
       30 * 60_000
     );
     preparedProfile.value = modelProfile.value;
@@ -515,7 +521,7 @@ async function copyDiagnostics(): Promise<void> {
     }
   }
   const diagnostics: DiagnosticInfo = {
-    appVersion: "0.7.1",
+    appVersion: "0.7.2",
     sidecarRunning: ocrSidecar.running,
     sidecarStderr: ocrSidecar.stderr ? "运行日志已省略，以免复制文档路径或识别相关输出" : "",
     ...remote

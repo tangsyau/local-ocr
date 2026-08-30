@@ -64,6 +64,53 @@ class FakeEngine:
 
 
 class SidecarServerTests(unittest.TestCase):
+    def test_bootstrap_precedes_prepare_worker_and_reserves_active_state(self) -> None:
+        server = sidecar_main.SidecarServer()
+        order = []
+        completed = threading.Event()
+        def bootstrap(progress: Any) -> None:
+            self.assertIs(threading.current_thread(), threading.main_thread())
+            self.assertTrue(server.active)
+            with self.assertRaises(RuntimeError):
+                server.start_recognition("conflict", {})
+            order.append("imports")
+        def prepare(*args: Any) -> dict[str, Any]:
+            self.assertIsNot(threading.current_thread(), threading.main_thread())
+            self.assertEqual(order, ["imports"])
+            order.append("models")
+            return {"ready": True}
+        def emit(message: dict[str, Any]) -> None:
+            if message.get("id") == "prepare" and message.get("type") == "result":
+                completed.set()
+        with (patch.object(server.engine, "initialize_runtime", side_effect=bootstrap),
+              patch.object(server.engine, "prepare", side_effect=prepare),
+              patch.object(sidecar_main, "emit", side_effect=emit)):
+            server.handle({"id": "prepare", "method": "prepare"})
+            self.assertTrue(completed.wait(timeout=2))
+        self.assertEqual(order, ["imports", "models"])
+        self.assertFalse(server.active)
+
+    def test_import_failure_clears_busy_state_and_cancels_ci_watchdog(self) -> None:
+        server = sidecar_main.SidecarServer()
+        with (patch.object(server.engine, "initialize_runtime", side_effect=ImportError("broken runtime")),
+              patch.object(sidecar_main, "start_prepare_trace") as start_trace,
+              patch.object(sidecar_main, "stop_prepare_trace") as stop_trace):
+            with self.assertRaises(ImportError):
+                server.handle({"id": "prepare", "method": "prepare"})
+        self.assertFalse(server.active)
+        start_trace.assert_called_once()
+        stop_trace.assert_called_once()
+
+    def test_trace_watchdog_is_disabled_in_normal_app(self) -> None:
+        with (patch.dict(sidecar_main.os.environ, {"LOCAL_OCR_CI_PREPARE_TRACE": ""}),
+              patch.object(sidecar_main.faulthandler, "dump_traceback_later") as dump):
+            sidecar_main.start_prepare_trace()
+        dump.assert_not_called()
+        with (patch.dict(sidecar_main.os.environ, {"LOCAL_OCR_CI_PREPARE_TRACE": "1"}),
+              patch.object(sidecar_main.faulthandler, "dump_traceback_later") as dump):
+            sidecar_main.start_prepare_trace()
+        dump.assert_called_once_with(60, repeat=True, file=sidecar_main.TRACE_STDERR)
+
     def test_model_status_remains_responsive_during_preparation(self) -> None:
         server = sidecar_main.SidecarServer()
         entered, release, finished = threading.Event(), threading.Event(), threading.Event()
@@ -80,9 +127,11 @@ class SidecarServerTests(unittest.TestCase):
                 finished.set()
 
         with (patch.object(server.engine, "prepare", side_effect=prepare),
+              patch.object(server.engine, "initialize_runtime") as bootstrap,
               patch.object(sidecar_main, "emit", side_effect=collect),
               patch.object(sidecar_main, "model_cache_status", return_value={"models": []})):
             server.handle({"id": "prepare", "method": "prepare"})
+            bootstrap.assert_called_once()
             try:
                 self.assertTrue(entered.wait(timeout=1))
                 server.handle({"id": "status", "method": "model_status"})

@@ -112,16 +112,18 @@ def model_cache_status(
 class ModelProgressStream:
     def __init__(self, stream: Any, names: list[str], callback: ProgressCallback | None):
         self.stream, self.names, self.callback = stream, names, callback
-        self.buffer = ""
+        # .buffer is the underlying binary stream, not our text accumulator.
+        self._pending_text = ""
         self.last_name = ""
 
     def write(self, value: str) -> int:
         result = self.stream.write(value)
-        self.buffer = (self.buffer + value)[-2000:]
+        self.stream.flush()
+        self._pending_text = (self._pending_text + value)[-2000:]
         for name in self.names:
-            if name in self.buffer and name != self.last_name:
+            if name in self._pending_text and name != self.last_name:
                 self.last_name = name
-                self.buffer = ""
+                self._pending_text = ""
                 if self.callback:
                     self.callback(f"正在下载或载入模型：{name}", None, "model", None)
                 break
@@ -458,6 +460,7 @@ class OcrEngine:
         self._profile: str | None = None
         self._mode: str | None = None
         self._native_runtime: Any | None = None
+        self._runtime_initialized = False
         self._pause_requested = threading.Event()
         self._cancel_requested = threading.Event()
 
@@ -472,6 +475,29 @@ class OcrEngine:
     @property
     def mode(self) -> str | None:
         return self._mode
+
+    def initialize_runtime(self, progress: ProgressCallback | None = None) -> None:
+        """Cold-import native dependencies before the command loop resumes stdin.
+
+        0.7.0 moved first imports into the prepare worker as well as model loading.
+        Keep first-time imports on the main thread; model creation/downloads can
+        still run in the worker after imports finish. Do not wrap stderr during
+        cold imports: third-party logging setup may inspect its binary interface.
+        """
+        if self._runtime_initialized:
+            return
+        if threading.current_thread() is not threading.main_thread():
+            raise RuntimeError("Paddle 依赖首次导入必须由 sidecar 主线程执行")
+        with contextlib.redirect_stdout(sys.stderr):
+            if progress:
+                progress("正在主线程导入 Paddle（尚未创建模型）……", None, "import_paddle", None)
+            import paddle  # noqa: F401
+            if progress:
+                progress("Paddle 导入完成，正在导入 PaddleOCR / PaddleX……", None, "import_paddleocr", None)
+            from paddleocr import PaddleOCR, TableRecognitionPipelineV2  # noqa: F401
+        self._runtime_initialized = True
+        if progress:
+            progress("OCR 依赖导入完成，即将创建模型流水线", None, "imports_ready", None)
 
     def check_native_runtime(self) -> dict[str, Any]:
         """Verify that Paddle's lazily loaded CPU runtime is discoverable."""
@@ -574,7 +600,8 @@ class OcrEngine:
         with contextlib.redirect_stdout(progress_stream), contextlib.redirect_stderr(progress_stream):
             if mode == "table":
                 from paddleocr import TableRecognitionPipelineV2
-
+                if progress:
+                    progress("正在创建轻量表格流水线；需要时下载模型……", None, "create_pipeline", None)
                 self._ocr = TableRecognitionPipelineV2(
                     layout_detection_model_name="PicoDet_layout_1x_table",
                     wired_table_structure_recognition_model_name="SLANet_plus",
@@ -590,7 +617,8 @@ class OcrEngine:
                 )
             else:
                 from paddleocr import PaddleOCR
-
+                if progress:
+                    progress("正在创建文字识别流水线；需要时下载模型……", None, "create_pipeline", None)
                 self._ocr = PaddleOCR(
                     text_detection_model_name=model["detection"],
                     text_recognition_model_name=model["recognition"],
