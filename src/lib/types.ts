@@ -40,6 +40,9 @@ export interface OcrResult {
   text: string;
   pageCount: number;
   totalPageCount: number;
+  selectedPageCount?: number;
+  pageRange?: string;
+  rotation?: number;
   blockCount: number;
   tableCount: number;
   rawTableCount: number;
@@ -118,4 +121,8 @@ export interface OcrTask {
   revision?: number;
   exportedRevision?: number;
   textEdited?: boolean;
+  pageRange?: string;
+  rotation?: number;
+  sourcePageCount?: number;
+  sourcePage?: number;
 }

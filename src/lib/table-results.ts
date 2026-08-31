@@ -80,10 +80,11 @@ function repeatedHeaderRows(left: OcrTable, right: OcrTable): number {
   return repeated;
 }
 
-export function mergeTablePages(pages: OcrTable[][]): OcrTable[] {
+export function mergeTablePages(pages: OcrTable[][], pageIndices?: number[]): OcrTable[] {
   const merged: OcrTable[] = [];
   let previousPageTables: OcrTable[] = [];
-  pages.forEach((pageTables, pageIndex) => {
+  pages.forEach((pageTables, ordinal) => {
+    const pageIndex = pageIndices?.[ordinal] ?? ordinal;
     const normalizedPage = pageTables.map((table) => cloneTable(table, pageIndex));
     if (normalizedPage.length === 1 && previousPageTables.length === 1 && merged.length) {
       const candidate = merged[merged.length - 1];

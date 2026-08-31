@@ -109,7 +109,7 @@ jobs:
 
       - name: Run source checks
         run: |
-          python -m pip install "openpyxl>=3.1,<4"
+          python -m pip install "openpyxl>=3.1,<4" "Pillow>=10,<13" "numpy>=1.24,<3" "pypdfium2>=4,<6"
           npm run build
           npm run test:ui
           npm run test:python
@@ -130,6 +130,10 @@ jobs:
       - name: Verify frozen sidecar and models
         timeout-minutes: 45
         run: npm run sidecar:smoke -- --prepare --all-profiles --table
+
+      - name: Verify offline model transfer and document settings
+        timeout-minutes: 45
+        run: python scripts/smoke-model-transfer.py
 
       - name: Free pip download cache
         if: steps.sidecar-cache.outputs.cache-hit != 'true'
@@ -290,7 +294,7 @@ jobs:
 
       - name: Run shared and WebKitGTK 4.0 source checks
         run: |
-          python -m pip install "openpyxl>=3.1,<4"
+          python -m pip install "openpyxl>=3.1,<4" "Pillow>=10,<13" "numpy>=1.24,<3" "pypdfium2>=4,<6"
           npm run build:webkit4
           npm run test:ui
           npm run test:python
@@ -303,6 +307,10 @@ jobs:
       - name: Verify frozen sidecar and models
         timeout-minutes: 45
         run: npm run sidecar:smoke -- --prepare --table
+
+      - name: Verify legacy offline model transfer and document settings
+        timeout-minutes: 45
+        run: python scripts/smoke-model-transfer.py
 
       - name: Stage sidecar for Tauri 1 shell
         run: npm run sidecar:stage-webkit4

@@ -1,30 +1,18 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
-  <defs>
-    <linearGradient id="background" x1="128" y1="96" x2="896" y2="928" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#155E75"/>
-      <stop offset="1" stop-color="#0F766E"/>
-    </linearGradient>
-    <linearGradient id="scan" x1="224" y1="0" x2="800" y2="0" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#5EEAD4" stop-opacity="0"/>
-      <stop offset="0.16" stop-color="#5EEAD4"/>
-      <stop offset="0.84" stop-color="#A7F3D0"/>
-      <stop offset="1" stop-color="#A7F3D0" stop-opacity="0"/>
-    </linearGradient>
-  </defs>
-  <rect x="48" y="48" width="928" height="928" rx="220" fill="url(#background)"/>
-  <path d="M284 184h302l154 154v502H284z" fill="#F8FAFC"/>
-  <path d="M586 184v154h154" fill="#CCFBF1"/>
-  <path d="M586 184l154 154H586z" fill="#99F6E4"/>
-  <g fill="#0F766E" opacity="0.78">
-    <rect x="378" y="430" width="268" height="34" rx="17"/>
-    <rect x="378" y="510" width="214" height="34" rx="17"/>
-    <rect x="378" y="590" width="250" height="34" rx="17"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">本地 OCR — 灰绿修长版</title>
+  <desc id="desc">沿用 B 版的灰绿色、浅米绿色横线和扫描角，采用 C 版的修长纸张与较大右上折角。背景透明。</desc>
+  <!-- C paper silhouette and fold, with B palette. -->
+  <path fill="#527563" d="M236 120H600L808 328V860Q808 904 764 904H260Q216 904 216 860V140Q216 120 236 120Z"/>
+  <path fill="#B6D4B5" d="M600 120L808 328H600Z"/>
+  <!-- B text strokes: preserve their color, weight, spacing and lengths. -->
+  <g fill="#F0F4E6">
+    <rect x="304" y="436" width="416" height="36" rx="18"/>
+    <rect x="304" y="552" width="416" height="36" rx="18"/>
+    <rect x="304" y="668" width="320" height="36" rx="18"/>
   </g>
-  <rect x="212" y="686" width="600" height="24" rx="12" fill="url(#scan)"/>
-  <g fill="none" stroke="#D1FAE5" stroke-width="32" stroke-linecap="round">
-    <path d="M244 322v-78h78"/>
-    <path d="M702 244h78v78"/>
-    <path d="M780 702v78h-78"/>
-    <path d="M322 780h-78v-78"/>
+  <!-- B bracket styling, repositioned around the narrower paper. -->
+  <g fill="none" stroke="#7CA58C" stroke-width="24" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M144 136V56H224"/>
+    <path d="M880 888V968H800"/>
   </g>
 </svg>

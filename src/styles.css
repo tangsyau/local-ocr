@@ -145,6 +145,23 @@ h1 { margin: 0; font-size: 28px; letter-spacing: -.04em; }
 .focus-button svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .image-stage { min-height: 0; padding: 18px; overflow: auto; display: grid; place-items: start center; background: #e7e9e4; }
 .image-stage img { display: block; max-width: 100%; height: auto; border-radius: 3px; box-shadow: 0 7px 24px rgba(25,31,27,.18); }
+.preview-content { display: flex; flex-direction: column; min-height: 0; overflow: auto; }
+.preview-content > .empty-state { flex: 1; min-height: 160px; }
+.document-controls { flex: 0 0 auto; padding: 10px 14px; border-bottom: 1px solid #e2e5df; background: #f5f8f3; }
+.document-control-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: #526158; font-size: 11px; }
+.document-control-row button, .document-control-row select, .document-control-row input { padding: 5px 7px; border: 1px solid #cbd6cc; border-radius: 6px; color: #3f644c; background: #fff; font-size: 11px; max-width: 100%; }
+.document-control-row input { width: 135px; }
+.document-controls p { margin: 7px 0 0; color: #738077; font-size: 10px; line-height: 1.5; }
+.document-controls p.document-settings-error { color: #a14237; }
+.rerun-row { margin-top: 8px; }
+.offline-manager { border-top: 1px solid #e2e5df; padding-bottom: 8px; }
+.step-card .offline-manager p { margin: 0; padding: 6px 10px; font-size: 10px; line-height: 1.6; overflow-wrap: anywhere; }
+.offline-capabilities { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; padding: 6px 10px; }
+.offline-capabilities label, .local-only-setting { display: flex; align-items: center; gap: 5px; font-size: 10px; color: #4f5f55; }
+.local-only-setting { padding: 6px 10px; }
+.offline-manager input { accent-color: #356d48; }
+.transfer-progress { display: block; width: calc(100% - 20px); margin: 6px 10px; accent-color: #356d48; height: 6px; }
+.offline-manager .transfer-message { color: #356d48; }
 .empty-state { min-height: 280px; display: grid; place-content: center; justify-items: center; gap: 18px; color: #828a84; font-size: 13px; }
 .scan-mark { position: relative; width: 74px; height: 74px; border: 1px dashed #b2bab4; border-radius: 13px; }
 .scan-mark i { position: absolute; width: 18px; height: 18px; border-color: #4b7658; border-style: solid; }

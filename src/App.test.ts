@@ -58,6 +58,7 @@ beforeEach(() => {
     if (method === "validate_paths") return { items: params.items.map((item: { id: string }) => ({ id: item.id, exists: true })) };
     if (method === "ui_smoke_status") return { enabled: false };
     if (method === "model_status") return null;
+    if (method === "document_info") return { totalPageCount: 10, selectedPageCount: params.pageRange ? 3 : 10 };
     if (method === "cancel") { mock.jobs[mock.jobs.length - 1]?.resolve(result("部分结果", true)); return {}; }
     return {};
   });
@@ -66,6 +67,65 @@ beforeEach(() => {
 afterEach(() => { wrapper?.unmount(); wrapper = null; vi.restoreAllMocks(); });
 
 describe("batch and recovery interactions", () => {
+  it("applies PDF page ranges per task and passes them to recognition", async () => {
+    wrapper = mount(App); await flushPromises();
+    mock.dropped!(["/document.pdf"]); await flushPromises();
+    await wrapper.find(".document-controls select").setValue("custom");
+    await wrapper.find('[aria-label="指定 PDF 页码"]').setValue("2,4-5");
+    await button("应用页码").trigger("click"); await flushPromises();
+    expect(wrapper.find(".task-main").text()).toContain("2,4-5");
+    await button("开始批量").trigger("click"); await flushPromises();
+    expect(mock.request.mock.calls.find(call => call[0] === "recognize")?.[1].pageRange).toBe("2,4-5");
+    mock.jobs[0].onEvent!({ event: "source_page", page: 4, pageCount: 3, message: "正在识别原文第 4 页" });
+    await flushPromises();
+    expect(wrapper.find(".task-main").text()).toContain("原文第 4 页");
+    expect(wrapper.find(".task-main").text()).toContain("0/3");
+    mock.jobs[0].resolve(result("完成")); await flushPromises();
+  });
+
+  it("rotates checked images without applying rotation to PDFs", async () => {
+    wrapper = mount(App); await flushPromises();
+    mock.dropped!(["/one.png", "/two.png", "/doc.pdf"]); await flushPromises();
+    await button("右转 90°").trigger("click");
+    await button("全选 / 取消").trigger("click");
+    await button("应用角度到勾选图片").trigger("click");
+    expect(wrapper.findAll(".task-main").filter(item => item.text().includes("90°"))).toHaveLength(2);
+    await button("开始批量").trigger("click"); await flushPromises();
+    expect(mock.request.mock.calls.find(call => call[0] === "recognize")?.[1].rotation).toBe(90);
+    mock.jobs[0].resolve(result("一")); await flushPromises();
+    mock.jobs[1].resolve(result("二")); await flushPromises();
+    mock.jobs[2].resolve(result("三")); await flushPromises();
+  });
+
+  it("enables local-only preparation after model import", async () => {
+    wrapper = mount(App); await flushPromises();
+    mock.open.mockResolvedValue("/usb/LocalOCR-models");
+    const original = mock.request.getMockImplementation()!;
+    mock.request.mockImplementation((method, params, onEvent) => method === "import_model_pack"
+      ? Promise.resolve({ path: "/cache", modelCount: 2, capabilities: [{ profile: "accurate", mode: "text" }] })
+      : original(method, params, onEvent));
+    await button("从本地导入模型").trigger("click"); await flushPromises();
+    expect(wrapper.find<HTMLInputElement>(".local-only-setting input").element.checked).toBe(true);
+    expect(wrapper.find<HTMLInputElement>('input[value="accurate"]').element.checked).toBe(true);
+    await button("准备当前模型").trigger("click"); await flushPromises();
+    expect(mock.request.mock.calls.find(call => call[0] === "prepare")?.[1].localOnly).toBe(true);
+  });
+
+  it("does not overwrite previous corrections when rerun fails before its first page", async () => {
+    mock.load.mockResolvedValue({ schema: 1, selectedTaskId: "old", settings: defaultSettings,
+      tasks: [{ id: "old", batchId: "old", batchIndex: 0, path: "/old.png", fileName: "old.png", status: "completed", resultType: "text", result: result("历史校对"), textEdited: true }] });
+    wrapper = mount(App); await flushPromises();
+    await button("重新识别当前文件").trigger("click");
+    window.confirm = vi.fn(() => false);
+    await button("开始批量").trigger("click"); await flushPromises();
+    expect(mock.jobs).toHaveLength(0);
+    expect(wrapper.find<HTMLTextAreaElement>("textarea").element.value).toBe("历史校对");
+    window.confirm = vi.fn(() => true);
+    await button("开始批量").trigger("click"); await flushPromises();
+    mock.jobs[0].reject(new Error("model failed")); await flushPromises();
+    expect(wrapper.find<HTMLTextAreaElement>("textarea").element.value).toBe("历史校对");
+  });
+
   it("shows autosave in the header without duplicating it in the footer", async () => {
     wrapper = mount(App); await flushPromises();
     expect(wrapper.find(".save-badge").text()).toBe("自动保存已启用");

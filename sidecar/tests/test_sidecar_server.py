@@ -32,7 +32,7 @@ class FakeEngine:
         self.pause_called = False
         self.cancel_called = False
 
-    def recognize(self, path: str, score: float, mode: str, progress: Any, on_page: Any = None) -> dict[str, Any]:
+    def recognize(self, path: str, score: float, mode: str, progress: Any, on_page: Any = None, **kwargs: Any) -> dict[str, Any]:
         self.started.set()
         if on_page:
             on_page({"pageIndex": 0, "text": "ok", "blocks": [], "tables": []}, 1, 3)
@@ -74,7 +74,7 @@ class SidecarServerTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 server.start_recognition("conflict", {})
             order.append("imports")
-        def prepare(*args: Any) -> dict[str, Any]:
+        def prepare(*args: Any, **kwargs: Any) -> dict[str, Any]:
             self.assertIsNot(threading.current_thread(), threading.main_thread())
             self.assertEqual(order, ["imports"])
             order.append("models")
@@ -116,7 +116,7 @@ class SidecarServerTests(unittest.TestCase):
         entered, release, finished = threading.Event(), threading.Event(), threading.Event()
         messages: list[dict[str, Any]] = []
 
-        def prepare(profile: str, mode: str, progress: Any) -> dict[str, Any]:
+        def prepare(profile: str, mode: str, progress: Any, **kwargs: Any) -> dict[str, Any]:
             entered.set()
             release.wait(timeout=2)
             return {"ready": True}

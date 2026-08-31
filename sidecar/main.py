@@ -11,7 +11,10 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
-from engine import OcrEngine, export_table_results, export_text_results, model_cache_status, official_model_cache
+os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
+from engine import OcrEngine, document_page_count, export_table_results, export_text_results, model_cache_status, official_model_cache
+from document_input import parse_page_range
+from model_pack import TransferCancelled, export_pack, import_pack, model_worker_main
 from export_service import export_results, preview_exports
 from diagnostics import error_category, export_diagnostics, open_logs, record_event, safe_report
 
@@ -69,6 +72,7 @@ class SidecarServer:
         self._worker: threading.Thread | None = None
         self._worker_lock = threading.Lock()
         self._initializing = False
+        self._transfer_cancel = threading.Event()
 
     @property
     def active(self) -> bool:
@@ -135,7 +139,8 @@ class SidecarServer:
             profile, mode = str(params.get("profile") or "fast"), str(params.get("mode") or "text")
             if params.get("reload"):
                 self.engine.unload()
-            result = self.engine.prepare(profile, mode, lambda message, page, event, count: self._progress(request_id, message, page, event, count))
+            result = self.engine.prepare(profile, mode, lambda message, page, event, count: self._progress(request_id, message, page, event, count),
+                                         local_only=bool(params.get("localOnly")))
             response = {"id": request_id, "type": "result", "result": result}
             record_event(method)
         except Exception as error:
@@ -162,6 +167,8 @@ class SidecarServer:
                     "id": request_id, "type": "event", "event": "page_result",
                     "pageResult": page, "elapsedMs": elapsed, "pageCount": total,
                 }),
+                page_range=str(params.get("pageRange") or ""),
+                rotation=params.get("rotation", 0),
             )
             response = {"id": request_id, "type": "result", "result": result}
             record_event("recognize", "cancelled" if result.get("cancelled") else "ok")
@@ -182,11 +189,37 @@ class SidecarServer:
         emit(response)
 
     def shutdown(self) -> None:
+        self._transfer_cancel.set()
         self.engine.cancel()
         with self._worker_lock:
             worker = self._worker
         if worker is not None:
             worker.join(timeout=10)
+
+    def start_model_transfer(self, request_id: str, method: str, params: dict[str, Any]) -> None:
+        with self._worker_lock:
+            if self._initializing or (self._worker is not None and self._worker.is_alive()):
+                raise RuntimeError("请等待当前操作结束再迁移模型")
+            self._transfer_cancel.clear()
+            self._worker = threading.Thread(target=self._run_model_transfer, args=(request_id, method, params), daemon=True)
+            self._worker.start()
+
+    def _run_model_transfer(self, request_id: str, method: str, params: dict[str, Any]) -> None:
+        callback = lambda message, page, event, count: self._progress(request_id, message, page, event, count)
+        try:
+            if method == "export_model_pack":
+                result = export_pack(str(params.get("directory") or ""), params.get("capabilities"), callback, self._transfer_cancel)
+            else:
+                result = import_pack(str(params.get("directory") or ""), callback, self._transfer_cancel, before_commit=self.engine.unload)
+            response = {"id": request_id, "type": "result", "result": result}
+        except TransferCancelled as error:
+            response = {"id": request_id, "type": "result", "result": {"cancelled": True, "message": str(error)}}
+        except Exception as error:
+            response = {"id": request_id, "type": "error", "message": str(error), "details": traceback.format_exc(limit=24)}
+        finally:
+            with self._worker_lock:
+                self._worker = None
+        emit(response)
 
     def handle(self, request: dict[str, Any]) -> bool:
         request_id = str(request.get("id") or "")
@@ -219,6 +252,23 @@ class SidecarServer:
                 str(params.get("profile") or "fast"),
                 str(params.get("mode") or "text"),
             )
+        elif method in {"export_model_pack", "import_model_pack"}:
+            self.start_model_transfer(request_id, method, params)
+            return True
+        elif method == "cancel_model_transfer":
+            self._transfer_cancel.set()
+            result = {"requested": True}
+        elif method == "document_info":
+            # PDFium is not thread-safe: do not inspect another PDF while the
+            # recognition worker is rendering pages.
+            if self.active:
+                raise RuntimeError("请等待当前任务结束再检查页码")
+            path = Path(str(params.get("path") or "")).expanduser().resolve(strict=True)
+            if not path.is_file() or path.suffix.lower() != ".pdf":
+                raise ValueError("页码设置仅用于 PDF 文件")
+            total = document_page_count(path)
+            selected = parse_page_range(str(params.get("pageRange") or ""), total)
+            result = {"totalPageCount": total, "selectedPageCount": len(selected)}
         elif method == "delete_models":
             if self.active:
                 raise RuntimeError("识别期间不能删除模型")
@@ -248,7 +298,7 @@ class SidecarServer:
             target = os.environ.get("LOCAL_OCR_UI_SMOKE_DIR")
             if not target or not Path(target).is_dir():
                 raise ValueError("UI 测试未启用")
-            report = {"appVersion": "0.7.4", "sidecar": True,
+            report = {"appVersion": "0.8.0", "sidecar": True,
                       "width": int(params.get("width") or 0), "height": int(params.get("height") or 0),
                       "sidebarFits": bool(params.get("sidebarFits"))}
             marker = Path(target) / "ready.tmp"
@@ -329,4 +379,13 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if "--model-worker" in sys.argv:
+        for stream in (sys.stdin, sys.stdout, sys.stderr):
+            if hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8", errors="replace")
+        start_prepare_trace()
+        try:
+            raise SystemExit(model_worker_main())
+        finally:
+            stop_prepare_trace()
     raise SystemExit(main())

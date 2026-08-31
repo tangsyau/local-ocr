@@ -11,6 +11,7 @@ export interface AppSettings {
   exportPrefix: string;
   exportSuffix: string;
   exportName: string;
+  localModelsOnly?: boolean;
 }
 
 export interface SavedSession {
@@ -24,7 +25,7 @@ export interface SavedSession {
 export const defaultSettings: AppSettings = {
   profile: "fast", mode: "text", threshold: 0.5, merge: true,
   formats: ["txt", "xlsx"], exportGrouping: "separate", exportCollision: "rename",
-  exportPrefix: "", exportSuffix: "", exportName: "批量识别结果"
+  exportPrefix: "", exportSuffix: "", exportName: "批量识别结果", localModelsOnly: false
 };
 
 export function restoreSession(value: unknown): SavedSession | null {
@@ -47,8 +48,10 @@ export function restoreSession(value: unknown): SavedSession | null {
       ...task,
       batchId: task.batchId || task.id,
       batchIndex: task.batchIndex ?? 0,
+      pageRange: typeof task.pageRange === "string" ? task.pageRange.slice(0, 2000) : "",
+      rotation: [0, 90, 180, 270].includes(task.rotation ?? 0) ? task.rotation ?? 0 : 0,
       status: interrupted ? "queued" as const : task.status,
-      error: interrupted ? "上次处理未结束；结果已保留，重新开始时会从文件首页识别" : task.error
+      error: interrupted ? "上次处理未结束；结果已保留，重新开始时会从本次所选的第一页识别" : task.error
     };
   });
   const input = data.settings;
@@ -63,7 +66,8 @@ export function restoreSession(value: unknown): SavedSession | null {
     exportCollision: ["skip", "overwrite"].includes(input.exportCollision) ? input.exportCollision : "rename",
     exportPrefix: String(input.exportPrefix || "").slice(0, 100),
     exportSuffix: String(input.exportSuffix || "").slice(0, 100),
-    exportName: String(input.exportName || defaultSettings.exportName).slice(0, 100)
+    exportName: String(input.exportName || defaultSettings.exportName).slice(0, 100),
+    localModelsOnly: input.localModelsOnly === true
   };
   return {
     schema: 1,

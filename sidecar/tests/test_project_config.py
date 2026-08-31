@@ -79,11 +79,11 @@ class ProjectConfigTests(unittest.TestCase):
             ROOT / "compat" / "webkitgtk-4.0" / "src-tauri" / "Cargo.toml"
         ).read_text(encoding="utf-8")
 
-        self.assertEqual(package["version"], "0.7.4")
+        self.assertEqual(package["version"], "0.8.0")
         self.assertEqual(standard_config["version"], package["version"])
         self.assertEqual(legacy_config["package"]["version"], package["version"])
-        self.assertIn('version = "0.7.4"', standard_cargo)
-        self.assertIn('version = "0.7.4"', legacy_cargo)
+        self.assertIn('version = "0.8.0"', standard_cargo)
+        self.assertIn('version = "0.8.0"', legacy_cargo)
 
     def test_model_manager_uses_aligned_columns_and_one_deletion_flow(self) -> None:
         app = (ROOT / "src" / "App.vue").read_text(encoding="utf-8")
@@ -109,7 +109,7 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertIn('ocrSidecar.request("pause"', app)
         self.assertIn('ocrSidecar.request("cancel"', app)
         self.assertIn("task.totalPages", app)
-        self.assertIn("正在处理第", app)
+        self.assertIn("正在识别原文第", app)
         self.assertIn("复制表格（TSV）", app)
         self.assertIn("tableToTsv", app)
         self.assertIn("PROTOCOL_STDOUT.write", sidecar)

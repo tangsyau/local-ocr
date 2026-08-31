@@ -10,7 +10,7 @@ describe("local session recovery", () => {
     expect(restored?.tasks[0].result?.text).toBe("人工校对");
     expect(restored?.tasks[1].status).toBe("queued");
     expect(restored?.selectedTaskId).toBe("two");
-    expect(restored?.tasks[1].error).toContain("首页");
+    expect(restored?.tasks[1].error).toContain("所选的第一页");
   });
 
   it("rejects broken snapshots instead of silently replacing them", () => {

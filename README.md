@@ -4,7 +4,19 @@
 
 ## 当前功能
 
-当前版本为 **0.7.4：模型管理与状态栏整理版**。没有新增快捷键；仅保留原有的专注模式 `Esc` 退出操作。
+当前版本为 **0.8.0：指定页码、图片旋转与离线模型迁移**。沿用 0.7.5 的正式图标；没有新增快捷键，仅保留原有的专注模式 `Esc` 退出操作。
+
+### 0.8.0 使用方法
+
+**PDF 指定页码**：选择队列中的 PDF，在中间文档预览区选择“全部页”或“指定页码”，输入 `1,3-5,8` 后点“应用页码”。页码是 PDF 实际顺序，不是正文印刷页码。范围会去重、排序并校验越界；“应用到勾选 PDF”只影响勾选的 PDF，任一文件验证失败时整次设置不应用。只有选中的页会渲染并送入 OCR，原文第 2、5 页不会被当作连续页合并表格。进度分别显示原文页码和所选页数的完成比例。
+
+**图片旋转**：选中图片，在预览上方左转、右转或还原；也可将当前角度应用到勾选的图片。先按 EXIF 方向读取，再叠加手动旋转，实际 OCR 输入与预览方向一致。原文件不修改。已有结果不会自动重跑；点“重新识别当前文件”加入队列，再点击开始，确认后替换结果。如果第一页就失败，原结果仍保留。本版不增加 PDF 预览、PDF 单页旋转或原图联动校对。
+
+**离线迁移**：请阅读 [离线使用说明](docs/OFFLINE.md)。入口在“模型管理 → 在离线电脑上使用”。联网电脑选择文字/表格与轻量/高精度组合，点“准备并导出模型”；将导出的整个 `LocalOCR-models` 文件夹与目标系统的软件安装包/AppImage 一起带走。离线电脑点“从本地导入模型”，校验及内置样张试识别通过后导入本机缓存，并自动开启“仅使用本地模型”。共用模型去重；包中不含原文档、识别结果、历史数据库或 Python 环境。
+
+迁移采用独立进程逐个验证模型组合，避免切换原生模型；提供下载阶段提示、文件复制进度及取消。导入先在临时目录校验 SHA-256 并以显式本地路径试识别，再短暂提交；普通失败会回滚，已有模型在验证阶段不变。取消不会删除已经下载成功的官方缓存。提交阶段不可取消，请勿强制关机；异常断电仍需检查缓存，不能承诺跨多个目录的文件系统级原子事务。
+
+Windows 不新增内置 WebView2 的大安装包：启动失败时提供原生提示及官方离线运行库下载地址；若安装程序本身因 WebView2 下载失败退出，请先按说明补装运行库。Linux 继续提供常规版与 WebKitGTK 4.0 / glibc 2.28 兼容版。
 
 - 批量选择 PNG、JPEG、WebP、BMP、TIFF 或 PDF，并按队列顺序识别；
 - 在“普通文字”和“表格与文字”两种模式之间切换；表格模式使用 TableRecognitionPipelineV2、PicoDet 表格版面检测和 SLANet_plus 轻量结构模型；
@@ -166,8 +178,8 @@ npm run tauri build
 工作流也会在推送 `v*` 标签时自动运行，例如：
 
 ```bash
-git tag v0.7.4
-git push origin v0.7.4
+git tag v0.8.0
+git push origin v0.8.0
 ```
 
 构建产物作为 Actions Artifact 保存 14 天。当前产物没有代码签名，因此 Windows 首次运行可能显示 SmartScreen 警告。正式公开发布前还应修改 `src-tauri/tauri.conf.json` 中的 `com.example.localocr` 标识，并配置 Windows 代码签名。
@@ -201,8 +213,15 @@ AppImage 仍然受 Linux 内核、glibc、显卡驱动及桌面环境等因素�
 11. 执行 Tauri 安装包构建；
 12. Windows 在一次性 runner 中静默安装 NSIS，Linux 在虚拟显示中运行 AppImage，要求实际前端与已打包 sidecar 完成握手并检查 x64 架构；
 13. 常规 Linux 任务另外运行 Chromium 布局检查，覆盖 1920×1080、1366×768 以及 100%/125%/150% 缩放的等效视口，检查表格单滚动条与专注模式，并上传截图。低分辨率高缩放允许侧栏滚动，1080p 初始侧栏要求一屏显示。
+14. 使用冻结后的 sidecar 导出并导入轻量表格模型包（内含轻量文字模型），在独立进程中进行本地试识别，验证无需下载的准备流程；再检查 PDF 选页的原文页码与逐页进度，以及旋转图片的推理路径。此检查在联网 runner 上运行，使用 Python 网络守卫及显式本地模型路径，不等同于整机断网验收。
 
 布局检查使用模拟的原生接口，不替代真实 WebView/安装包检查；安装包启动检查也不等于全套人工验收。源码交付环境若未安装 Chromium、Windows 或对应 WebKitGTK，相关实机检查必须在 Actions/目标电脑执行。
+
+#### 0.7.5 正式图标
+
+采用灰绿色透明纸张图标，保留浅色折角、文字横线和两枚扫描角。Windows 和两种 Linux 构建共用 `src-tauri/icons` 中的图标；SVG 源图位于 `assets/icon-source.svg`，不依赖字体或嵌入位图。PNG/ICO/ICNS 已随源码提交，Actions 无需另行生成。
+
+后续修改 SVG 后，在项目根目录运行 `npm run icons:generate`（先安装 npm 依赖），统一刷新各尺寸图标。此次不改变 OCR、模型、界面布局或构建工作流；安装包是否正常仍以 Actions 和目标电脑测试为准。
 
 #### 0.7.4 模型管理与状态栏整理
 
@@ -272,6 +291,7 @@ python sidecar/main.py
 运行不需要 PaddleOCR 的结构测试：
 
 ```bash
+python -m pip install "openpyxl>=3.1,<4" "Pillow>=10,<13" "numpy>=1.24,<3" "pypdfium2>=4,<6"
 npm run test:python
 ```
 
@@ -284,19 +304,18 @@ compat/webkitgtk-4.0/        Tauri 1 / WebKitGTK 4.0 兼容壳
 sidecar/main.py              NDJSON 协议入口
 sidecar/engine.py            PaddleOCR 初始化与结果标准化
 sidecar/network_guard.py     推理阶段 Python 网络守卫
+sidecar/document_input.py    PDF 选页、逐页渲染、EXIF 与图片旋转
+sidecar/model_pack.py        离线模型包、独立验证进程、校验和导入回滚
 scripts/build-sidecar.py     PyInstaller 与 Tauri target triple 处理
 scripts/smoke-sidecar.py     冻结后 sidecar 与模型载入检查
+scripts/smoke-model-transfer.py  冻结包模型迁移、PDF 选页和旋转检查
 scripts/stage-webkit4-sidecar.py  将同平台 sidecar 放入兼容壳
 .github/workflows/           Windows/Linux x64 自动构建
 ```
 
-## 下一阶段建议
+## 0.8.0 验收与边界
 
-1. 为表格单元格增加点击校对和原图区域联动；
-2. 增加跨页表格的手动合并/拆分，并提供更高精度的表格模型档位；
-3. 在图片上叠加 `polygon` 文本框并联动文字块；
-4. 增加 JSON、Markdown 导出和关闭程序后的队列恢复；
-5. 将模型下载器拆成独立、可联网的 sidecar；
-6. 增加自定义模型目录与模型版本清单；
-7. 在现有 Windows/Linux 流水线上增加 GitHub Release 发布，并另行验证 macOS arm64；
-8. 分开提供 CPU 版与 NVIDIA GPU 版。
+- 代码检查、单元测试和浏览器布局检查不等于 Windows/WebKitGTK 实机验收。发布前请在无模型缓存、已断网的目标电脑，完整测试安装、导入、文字识别和表格识别。
+- 普通识别任务在页间暂停/取消；长 PDF 不预先渲染全部页面。单页内的原生推理无法细粒度暂停。
+- 页码与旋转设置随现有会话自动保存。旧会话默认全部页、0 度；未完成任务仍从所选的第一页重新识别，不提供精确断点续算。
+- 本轮没有新增快捷键、PDF 预览、原图联动校对、GPU 或 macOS 构建，也没有升级 Paddle/OCR 的固定版本。

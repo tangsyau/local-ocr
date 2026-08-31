@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import TableResultViewer from "./components/TableResultViewer.vue";
+import ImagePreview from "./components/ImagePreview.vue";
 import { ocrSidecar, SidecarRequestError } from "./lib/sidecar";
 import { displayTables, imageBatchTables, mergeTablePages, tableToTsv } from "./lib/table-results";
 import { localImagePreview, createId, isWebkitGtk40Build, listenBeforeClose, listenFileDrop, openLocalDialog } from "./lib/tauri-bridge";
@@ -49,6 +50,16 @@ const queuePaused = ref(false);
 const stopRequested = ref(false);
 const modelCache = ref<ModelCacheStatus | null>(null);
 const modelManagerBusy = ref(false);
+const localModelsOnly = ref(false);
+const transferBusy = ref(false);
+const transferMessage = ref("");
+const transferPercent = ref<number | null>(null);
+const transferCommitting = ref(false);
+const transferCapabilities = ref(["fast:text"]);
+const pageRangeMode = ref("all");
+const pageRangeDraft = ref("");
+const documentSettingsBusy = ref(false);
+const documentSettingsError = ref("");
 const errorSummary = ref("");
 const errorDetails = ref("");
 
@@ -58,6 +69,11 @@ const selectedPath = computed(() => selectedTask.value?.path ?? "");
 const fileName = computed(() => selectedTask.value?.fileName ?? "");
 const extension = computed(() => fileName.value.split(".").pop()?.toLowerCase() ?? "");
 const isPdf = computed(() => extension.value === "pdf");
+watch(selectedTaskId, () => {
+  pageRangeDraft.value = selectedTask.value?.pageRange ?? "";
+  pageRangeMode.value = pageRangeDraft.value ? "custom" : "all";
+  documentSettingsError.value = "";
+});
 const previewUrl = ref("");
 const previewError = ref("");
 watch(selectedPath, async (path, _, onCleanup) => {
@@ -77,7 +93,7 @@ const modelsReady = computed(
   () => preparedProfile.value === modelProfile.value && preparedMode.value === recognitionMode.value
 );
 const setupBusy = computed(() => phase.value === "starting" || phase.value === "preparing" || modelManagerBusy.value);
-const modelControlsBusy = computed(() => queueRunning.value || queueStarting.value || setupBusy.value || exportBusy.value);
+const modelControlsBusy = computed(() => queueRunning.value || queueStarting.value || setupBusy.value || exportBusy.value || documentSettingsBusy.value);
 const queuedCount = computed(() => tasks.value.filter((task) => task.status === "queued").length);
 const completedCount = computed(() => tasks.value.filter((task) => task.status === "completed").length);
 const exportableTasks = computed(() => tasks.value.filter((task) => task.result && task.result.pageCount > 0));
@@ -121,7 +137,7 @@ const selectedPageCount = computed(() => selectedUsesImageBatch.value
 );
 const selectedTotalPageCount = computed(() => selectedUsesImageBatch.value
   ? selectedImageBatchTasks.value.length
-  : selectedResult.value?.totalPageCount ?? 0
+  : selectedResult.value?.selectedPageCount ?? selectedResult.value?.totalPageCount ?? 0
 );
 const selectedBlockCount = computed(() => selectedUsesImageBatch.value
   ? selectedImageBatchTasks.value.reduce((total, task) => total + (task.result?.blockCount ?? 0), 0)
@@ -196,7 +212,7 @@ onBeforeUnmount(() => {
 });
 
 watch([tasks, selectedTaskId, scoreThreshold, modelProfile, recognitionMode, mergeCrossPageTables,
-  exportTxt, exportXlsx, exportHtml, exportGrouping, exportCollision, exportPrefix, exportSuffix, exportName], () => {
+  exportTxt, exportXlsx, exportHtml, exportGrouping, exportCollision, exportPrefix, exportSuffix, exportName, localModelsOnly], () => {
   if (!sessionLoaded) return;
   if (saveTimer) clearTimeout(saveTimer);
   savePhase.value = "saving";
@@ -216,6 +232,7 @@ function applySettings(settings: AppSettings): void {
   exportPrefix.value = settings.exportPrefix;
   exportSuffix.value = settings.exportSuffix;
   exportName.value = settings.exportName;
+  localModelsOnly.value = settings.localModelsOnly === true;
 }
 
 function outputFormats(): string[] {
@@ -232,7 +249,7 @@ async function flushSave(): Promise<void> {
     schema: 1, savedAt: new Date().toISOString(), selectedTaskId: selectedTaskId.value, tasks: tasks.value,
     settings: { profile: modelProfile.value, mode: recognitionMode.value, threshold: scoreThreshold.value,
       merge: mergeCrossPageTables.value, formats: outputFormats(), exportGrouping: exportGrouping.value,
-      exportCollision: exportCollision.value, exportPrefix: exportPrefix.value, exportSuffix: exportSuffix.value, exportName: exportName.value }
+      exportCollision: exportCollision.value, exportPrefix: exportPrefix.value, exportSuffix: exportSuffix.value, exportName: exportName.value, localModelsOnly: localModelsOnly.value }
   }));
   saveChain = saveChain.catch(() => {}).then(() => saveSession(snapshot));
   try {
@@ -301,6 +318,48 @@ function isPdfPath(path: string): boolean {
   return path.toLowerCase().endsWith(".pdf");
 }
 
+async function applyPageRange(toChecked = false): Promise<void> {
+  if (modelControlsBusy.value || !selectedTask.value) return;
+  const targets = toChecked ? tasks.value.filter(task => checkedTaskIds.value.includes(task.id) && isPdfPath(task.path)) : [selectedTask.value];
+  if (!targets.length) { documentSettingsError.value = "请先勾选至少一个 PDF；图片不受页码设置影响。"; return; }
+  const range = pageRangeMode.value === "all" ? "" : pageRangeDraft.value.trim();
+  if (pageRangeMode.value === "custom" && !range) { documentSettingsError.value = "请输入页码，例如 1,3-5,8。"; return; }
+  documentSettingsBusy.value = true;
+  documentSettingsError.value = "";
+  try {
+    const updates = [];
+    for (const task of targets) {
+      try {
+        const info = await ocrSidecar.request<{ totalPageCount: number; selectedPageCount: number }>("document_info", { path: task.path, pageRange: range });
+        updates.push({ task, info });
+      } catch (error) { throw new Error(`${task.fileName}：${error instanceof Error ? error.message : String(error)}`); }
+    }
+    for (const { task, info } of updates) {
+      task.pageRange = range;
+      task.sourcePageCount = info.totalPageCount;
+    }
+    status.value = `已设置 ${targets.length} 个 PDF 的识别范围：${range || "全部页"}；已有结果保留，再次识别时生效。`;
+  } catch (error) {
+    documentSettingsError.value = error instanceof Error ? error.message : String(error);
+  } finally { documentSettingsBusy.value = false; }
+}
+
+function rotateImage(delta: number | null, toChecked = false): void {
+  if (modelControlsBusy.value || !selectedTask.value || isPdf.value) return;
+  const angle = delta === null ? 0 : ((selectedTask.value.rotation ?? 0) + delta + 360) % 360;
+  const targets = toChecked ? tasks.value.filter(task => checkedTaskIds.value.includes(task.id) && !isPdfPath(task.path)) : [selectedTask.value];
+  for (const task of targets) task.rotation = angle;
+  status.value = `已设置 ${targets.length} 张图片的旋转角度为 ${angle}°；不修改原文件，再次识别时生效。`;
+}
+
+function requeueSelected(): void {
+  const task = selectedTask.value;
+  if (!task || modelControlsBusy.value) return;
+  task.status = "queued";
+  task.error = undefined;
+  status.value = "已加入等待队列；点击开始批量识别后，将确认替换旧结果。";
+}
+
 async function chooseFiles(): Promise<void> {
   const selected = await openLocalDialog({
     multiple: true,
@@ -330,7 +389,9 @@ function addFiles(paths: string[]): void {
       fileName: path.split(/[\\/]/).pop() ?? path,
       status: "queued",
       resultType: recognitionMode.value,
-      revision: 0
+      revision: 0,
+      pageRange: "",
+      rotation: 0
     });
   }
   tasks.value.push(...additions);
@@ -388,7 +449,7 @@ function retryTask(task: OcrTask): void {
   task.error = undefined;
   task.currentPage = undefined;
   task.totalPages = undefined;
-  status.value = `${task.fileName} 已重新加入队列；重试会从文件首页开始`;
+  status.value = `${task.fileName} 已重新加入队列；重试会从本次所选的第一页开始`;
 }
 
 async function startSidecar(): Promise<boolean> {
@@ -448,7 +509,7 @@ async function runModelPreparation(): Promise<boolean> {
   try {
     await ocrSidecar.request(
       "prepare",
-      { profile: modelProfile.value, mode: recognitionMode.value, reload: true },
+      { profile: modelProfile.value, mode: recognitionMode.value, reload: true, localOnly: localModelsOnly.value },
       (event) => {
         if (["imports_ready", "create_pipeline", "model"].includes(event.event)) importsFinished = true;
         updateGlobalStatus(event);
@@ -473,6 +534,65 @@ async function runModelPreparation(): Promise<boolean> {
 function modelChanged(): void {
   if (!modelsReady.value) status.value = "识别设置已切换，开始识别时将准备对应模型";
   void refreshModelStatus();
+}
+
+async function transferModels(direction: "export" | "import"): Promise<void> {
+  if (modelControlsBusy.value || (direction === "export" && !transferCapabilities.value.length)) return;
+  try {
+    const directory = await openLocalDialog({ directory: true, title: direction === "export" ? "选择离线模型包保存位置" : "选择包含 model-pack.json 的离线模型文件夹" });
+    if (typeof directory !== "string" || modelControlsBusy.value) return;
+    if (direction === "import" && !window.confirm("请只导入自己导出或来自可信来源的模型包。校验和用于检查损坏，不是数字签名。验证成功后会替换包中同名模型；其他模型、原文档和识别结果不受影响。继续？")) return;
+    if (!ocrSidecar.running && !(await startSidecar())) return;
+    modelManagerBusy.value = transferBusy.value = true;
+    transferCommitting.value = false;
+    transferPercent.value = null;
+    transferMessage.value = direction === "export" ? "正在准备并导出模型，首次下载可能较久……" : "正在检查离线模型包……";
+    // Native model validation uses separate short-lived processes. Release the
+    // main predictor first to avoid holding two server-size models in memory.
+    if (preparedProfile.value !== null) {
+      await ocrSidecar.forceStop();
+      preparedProfile.value = preparedMode.value = null;
+      sidecarReady.value = false;
+      await ocrSidecar.start();
+      sidecarReady.value = true;
+    }
+    const result = await ocrSidecar.request<{ cancelled?: boolean; message?: string; path: string; modelCount: number; capabilities: Array<{ profile: ModelProfile; mode: RecognitionMode }> }>(
+      direction === "export" ? "export_model_pack" : "import_model_pack",
+      { directory, capabilities: transferCapabilities.value.map(value => { const [profile, mode] = value.split(":"); return { profile, mode }; }) },
+      event => {
+        transferMessage.value = event.message ?? transferMessage.value;
+        transferPercent.value = event.event === "transfer" && event.pageCount ? Math.min(100, Math.round((event.page ?? 0) / event.pageCount * 100)) : null;
+        transferCommitting.value = event.event === "commit";
+        updateGlobalStatus(event);
+      }, null);
+    if (result.cancelled) transferMessage.value = result.message ?? "模型迁移已取消";
+    else if (direction === "export") transferMessage.value = `已导出 ${result.modelCount} 个模型：${result.path}。请将整个文件夹和对应系统的软件安装包一并复制过去。`;
+    else {
+      localModelsOnly.value = true;
+      if (result.capabilities?.length) {
+        modelProfile.value = result.capabilities[0].profile;
+        recognitionMode.value = result.capabilities[0].mode;
+      }
+      transferMessage.value = `已导入并通过本地试识别，共 ${result.modelCount} 个模型。已开启“仅使用本地模型”，可以拔出 U 盘；点击准备当前模型即可使用。`;
+    }
+    status.value = transferMessage.value;
+    phase.value = "idle";
+  } catch (error) {
+    transferMessage.value = error instanceof Error ? error.message : String(error);
+    showError(error);
+  } finally {
+    modelManagerBusy.value = transferBusy.value = false;
+    transferCommitting.value = false;
+    await refreshModelStatus();
+  }
+}
+
+async function cancelModelTransfer(): Promise<void> {
+  if (!transferBusy.value || transferCommitting.value) return;
+  try {
+    await ocrSidecar.request("cancel_model_transfer");
+    transferMessage.value = "正在取消并清理临时文件，请稍候……";
+  } catch (error) { showError(error); }
 }
 
 function formatBytes(value: number): string {
@@ -535,7 +655,7 @@ async function copyDiagnostics(): Promise<void> {
     }
   }
   const diagnostics: DiagnosticInfo = {
-    appVersion: "0.7.4",
+    appVersion: "0.8.0",
     sidecarRunning: ocrSidecar.running,
     sidecarStderr: ocrSidecar.stderr ? "运行日志已省略，以免复制文档路径或识别相关输出" : "",
     ...remote
@@ -574,7 +694,10 @@ function updateGlobalStatus(event: SidecarEvent): void {
 }
 
 function updateTaskStatus(task: OcrTask, event: SidecarEvent): void {
-  if (event.page !== undefined) task.currentPage = event.page;
+  if (event.page !== undefined) {
+    if (event.event === "source_page") task.sourcePage = event.page;
+    else task.currentPage = event.page;
+  }
   if (event.pageCount !== undefined) task.totalPages = event.pageCount;
   if (event.event === "paused") {
     task.status = "paused";
@@ -587,7 +710,8 @@ function updateTaskStatus(task: OcrTask, event: SidecarEvent): void {
 }
 
 async function runQueue(): Promise<void> {
-  if (queueRunning.value || queueStarting.value || exportBusy.value || setupBusy.value || !queuedCount.value) return;
+  if (modelControlsBusy.value || !queuedCount.value) return;
+  if (tasks.value.some(task => task.status === "queued" && task.result) && !window.confirm("等待任务中已有识别结果（可能包含手动校对）。重新识别将替换这些结果，是否继续？")) return;
   queueStarting.value = true;
   try {
     if (!ocrSidecar.running && !(await startSidecar())) return;
@@ -597,6 +721,17 @@ async function runQueue(): Promise<void> {
       task.error = "原文件已移动、删除或当前不可访问；已保存的识别结果仍可导出。请恢复原路径后重试，或移除并重新添加文件。";
     }
     if (!queuedCount.value) { status.value = "等待任务的原文件均不可访问，请检查文件路径。"; return; }
+    for (const task of tasks.value.filter(item => item.status === "queued" && isPdfPath(item.path))) {
+      try {
+        const info = await ocrSidecar.request<{ totalPageCount: number; selectedPageCount: number }>("document_info", { path: task.path, pageRange: task.pageRange ?? "" });
+        task.sourcePageCount = info.totalPageCount;
+        task.totalPages = info.selectedPageCount;
+      } catch (error) {
+        task.status = "failed";
+        task.error = error instanceof Error ? error.message : String(error);
+      }
+    }
+    if (!queuedCount.value) { status.value = "PDF 页码或文件检查未通过，请选择失败任务查看原因并调整。"; return; }
     if (!modelsReady.value && !(await runModelPreparation())) return;
   } catch (error) {
     showError(error);
@@ -617,7 +752,12 @@ async function runQueue(): Promise<void> {
       task.status = "running";
       task.resultType = recognitionMode.value;
       task.error = undefined;
+      const previousResult = task.result;
+      const previousTextEdited = task.textEdited;
+      task.result = undefined;
       task.textEdited = false;
+      task.currentPage = 0;
+      task.sourcePage = undefined;
       activeTaskId = task.id;
       skipRequestedTaskId = "";
       const receivedPages: OcrPage[] = [];
@@ -626,21 +766,22 @@ async function runQueue(): Promise<void> {
       try {
         const result = await ocrSidecar.request<OcrResult>(
           "recognize",
-          { path: task.path, scoreThreshold: scoreThreshold.value, mode: recognitionMode.value },
+          { path: task.path, scoreThreshold: scoreThreshold.value, mode: recognitionMode.value, pageRange: task.pageRange ?? "", rotation: task.rotation ?? 0 },
           (event) => {
             updateTaskStatus(task, event);
             if (event.pageResult) {
               const editor = selectedTaskId.value === task.id ? document.querySelector<HTMLTextAreaElement>(".result-body textarea") : null;
               const position = editor ? { start: editor.selectionStart, end: editor.selectionEnd, top: editor.scrollTop } : null;
               receivedPages.push(event.pageResult);
-              const tables = recognitionMode.value === "table" ? mergeTablePages(receivedPages.map((page) => page.tables)) : [];
+              const tables = recognitionMode.value === "table" ? mergeTablePages(receivedPages.map((page) => page.tables), receivedPages.map((page, index) => page.pageIndex ?? index)) : [];
               const originalText = task.result?.text;
               task.result = {
                 path: task.path, profile: modelProfile.value, resultType: recognitionMode.value,
                 cancelled: false, text: task.textEdited
                   ? [originalText ?? "", event.pageResult.text].filter(Boolean).join("\n\n")
                   : receivedPages.map((page) => page.text).join("\n\n"),
-                pageCount: receivedPages.length, totalPageCount: event.pageCount ?? receivedPages.length,
+                pageCount: receivedPages.length, totalPageCount: task.sourcePageCount ?? event.pageCount ?? receivedPages.length,
+                selectedPageCount: event.pageCount ?? receivedPages.length, pageRange: task.pageRange ?? "", rotation: task.rotation ?? 0,
                 blockCount: receivedPages.reduce((sum, page) => sum + page.blocks.length, 0),
                 tableCount: tables.length, rawTableCount: receivedPages.reduce((sum, page) => sum + page.tables.length, 0),
                 elapsedMs: event.elapsedMs ?? 0, pages: [...receivedPages], tables
@@ -655,14 +796,20 @@ async function runQueue(): Promise<void> {
           },
           null
         );
-        if (task.textEdited && task.result) result.text = task.result.text;
-        task.result = result;
+        const liveResult = task.result as OcrResult | undefined;
+        if (task.textEdited && liveResult) result.text = liveResult.text;
+        task.result = result.pageCount === 0 && previousResult ? previousResult : result;
+        if (!result.pageCount && previousResult) task.textEdited = previousTextEdited;
         task.revision = (task.revision ?? 0) + 1;
         task.currentPage = result.pageCount;
-        task.totalPages = result.totalPageCount;
+        task.totalPages = result.selectedPageCount ?? result.totalPageCount;
         task.status = result.cancelled ? "cancelled" : "completed";
         if (skipRequestedTaskId === task.id) task.error = "已跳过此文件；已完成页面的部分结果已保留";
       } catch (error) {
+        if (!receivedPages.length && previousResult) {
+          task.result = previousResult;
+          task.textEdited = previousTextEdited;
+        }
         task.status = stopRequested.value ? "cancelled" : "failed";
         task.error = error instanceof Error ? error.message : String(error);
         if (!ocrSidecar.running) {
@@ -877,7 +1024,7 @@ function showError(error: unknown): void {
       : "";
   const help: Record<string, string> = {
     download: "模型下载失败：请检查网络；如缓存异常，可删除当前模型缓存后重新准备。",
-    model: "模型无法载入：可对对应模型重新下载；旧缓存会保留备份。",
+    model: localModelsOnly.value ? "请导入所需的本地模型；当前不会联网补下载。" : "模型无法载入：可从可信离线包导入，或删除对应缓存后重新准备。",
     runtime: "原生运行库错误：请保留版本与平台信息，并导出诊断包。",
     file: "原文件不可访问：请检查是否移动、删除或没有读取权限。",
     storage: "本机文件操作失败：请检查剩余磁盘空间与目录权限。"
@@ -951,6 +1098,26 @@ function showError(error: unknown): void {
               <button :disabled="!sidecarReady || modelManagerBusy" @click="refreshModelStatus">刷新</button>
               <button class="delete-model" :disabled="!modelCache?.sizeBytes || modelControlsBusy" @click="deleteCurrentModels">删除当前模型缓存</button>
             </div>
+            <details class="offline-manager">
+              <summary>在离线电脑上使用</summary>
+              <p>联网电脑：选择需要的能力，准备并导出模型文件夹；连同对应系统的软件安装包复制过去。</p>
+              <div class="offline-capabilities">
+                <label><input v-model="transferCapabilities" type="checkbox" value="fast:text" :disabled="modelControlsBusy" />轻量文字</label>
+                <label><input v-model="transferCapabilities" type="checkbox" value="accurate:text" :disabled="modelControlsBusy" />高精度文字</label>
+                <label><input v-model="transferCapabilities" type="checkbox" value="fast:table" :disabled="modelControlsBusy" />表格＋轻量文字</label>
+                <label><input v-model="transferCapabilities" type="checkbox" value="accurate:table" :disabled="modelControlsBusy" />表格＋高精度文字</label>
+              </div>
+              <div class="model-actions model-cache-actions">
+                <button :disabled="modelControlsBusy || !transferCapabilities.length" @click="transferModels('export')">准备并导出模型</button>
+                <button :disabled="modelControlsBusy" @click="transferModels('import')">从本地导入模型</button>
+              </div>
+              <p>离线电脑：导入整个 LocalOCR-models 文件夹。校验、试识别通过后可拔出 U 盘；仅导入可信来源的模型。</p>
+              <label class="local-only-setting"><input v-model="localModelsOnly" type="checkbox" :disabled="modelControlsBusy" />仅使用本地模型（不补下载）</label>
+              <p v-if="transferMessage" class="transfer-message" role="status">{{ transferMessage }}</p>
+              <progress v-if="transferBusy" class="transfer-progress" :value="transferPercent ?? undefined" max="100"></progress>
+              <button v-if="transferBusy" class="text-button" :disabled="transferCommitting" @click="cancelModelTransfer">{{ transferCommitting ? "正在提交，请稍候" : "取消模型迁移" }}</button>
+              <p class="offline-runtime-note">Windows 若无法打开且提示缺少 WebView2，请另行携带微软的 x64 完整离线安装包（Evergreen Standalone Installer）。Linux 仍需选择匹配系统的兼容版本。</p>
+            </details>
           </details>
           <details class="model-manager maintenance-manager">
             <summary>维护与自动保存</summary>
@@ -981,8 +1148,10 @@ function showError(error: unknown): void {
               <div class="task-main">
                 <span class="task-name" :title="task.path">{{ task.fileName }}</span>
                 <small v-if="task.missing" class="missing-file">原文件不可访问，已存结果仍可导出</small>
+                <small v-if="task.pageRange">原文页码：{{ task.pageRange }}</small>
+                <small v-if="task.rotation">图片顺时针 {{ task.rotation }}°</small>
                 <small v-if="task.totalPages">
-                  <template v-if="task.status === 'running'">正在处理第 {{ Math.min((task.currentPage ?? 0) + 1, task.totalPages) }}/{{ task.totalPages }} 页</template>
+                  <template v-if="task.status === 'running'">{{ task.sourcePage ? `正在识别原文第 ${task.sourcePage} 页 · ` : "" }}已完成 {{ task.currentPage ?? 0 }}/{{ task.totalPages }} 页</template>
                   <template v-else>已完成 {{ task.currentPage ?? 0 }}/{{ task.totalPages }} 页</template>
                   <span v-if="task.status === 'running' || task.status === 'paused'"> · {{ Math.round(((task.currentPage ?? 0) / task.totalPages) * 100) }}%</span>
                 </small>
@@ -1040,10 +1209,38 @@ function showError(error: unknown): void {
       <section class="content-grid">
         <article class="panel preview-panel">
           <div class="panel-title"><span>文档预览</span><small>{{ fileName || "尚未选择任务" }}</small></div>
+          <div class="preview-content">
+          <div v-if="selectedTask" class="document-controls">
+            <template v-if="isPdf">
+              <div class="document-control-row">
+                <label>识别页码 <select v-model="pageRangeMode" :disabled="modelControlsBusy"><option value="all">全部页</option><option value="custom">指定页码</option></select></label>
+                <input v-if="pageRangeMode === 'custom'" v-model="pageRangeDraft" aria-label="指定 PDF 页码" placeholder="例如 1,3-5,8" maxlength="2000" :disabled="modelControlsBusy" />
+                <button :disabled="modelControlsBusy" @click="applyPageRange()">应用页码</button>
+                <button :disabled="modelControlsBusy || !checkedTaskIds.length" @click="applyPageRange(true)">应用到勾选 PDF</button>
+              </div>
+              <p>已应用：{{ selectedTask.pageRange || "全部页" }}{{ selectedTask.sourcePageCount ? ` · 原文共 ${selectedTask.sourcePageCount} 页` : "" }}。页码按 PDF 实际顺序计算，不是正文印刷页码。</p>
+              <p v-if="documentSettingsError" class="document-settings-error" role="alert">{{ documentSettingsError }}</p>
+            </template>
+            <template v-else>
+              <div class="document-control-row">
+                <span>图片旋转 {{ selectedTask.rotation ?? 0 }}°</span>
+                <button :disabled="modelControlsBusy" @click="rotateImage(-90)">左转 90°</button>
+                <button :disabled="modelControlsBusy" @click="rotateImage(90)">右转 90°</button>
+                <button :disabled="modelControlsBusy" @click="rotateImage(null)">还原</button>
+                <button :disabled="modelControlsBusy || !checkedTaskIds.length" @click="rotateImage(0, true)">应用角度到勾选图片</button>
+              </div>
+              <p>仅调整预览与识别方向，不修改原文件。</p>
+            </template>
+            <div v-if="selectedTask.result || selectedTask.status === 'failed'" class="document-control-row rerun-row">
+              <span>{{ selectedTask.result ? '设置变更后，已有结果不会自动重跑。' : selectedTask.error }}</span>
+              <button :disabled="modelControlsBusy || selectedTask.status === 'queued'" @click="requeueSelected">重新识别当前文件</button>
+            </div>
+          </div>
           <div v-if="previewError" class="empty-state"><p>{{ previewError }}</p></div>
-          <div v-else-if="previewUrl" class="image-stage"><img :src="previewUrl" :alt="fileName" @error="previewError = '无法显示此图片格式或文件已不可读，仍可尝试识别或查看已保存的结果。'" /></div>
-          <div v-else-if="isPdf" class="empty-state pdf-state"><div class="document-icon">PDF</div><p>PDF 已加入队列，将逐页识别</p></div>
+          <ImagePreview v-else-if="previewUrl" :src="previewUrl" :alt="fileName" :rotation="selectedTask?.rotation ?? 0" @error="previewError = '无法显示此图片格式或文件已不可读，仍可尝试识别或查看已保存的结果。'" />
+          <div v-else-if="isPdf" class="empty-state pdf-state"><div class="document-icon">PDF</div><p>PDF 已加入队列，将按所选页码逐页识别</p></div>
           <div v-else class="empty-state"><div class="scan-mark"><i></i><i></i><i></i><i></i></div><p>从左侧添加并选择图片或 PDF</p></div>
+          </div>
         </article>
 
         <article class="panel result-panel">
@@ -1078,7 +1275,7 @@ function showError(error: unknown): void {
           </div>
           <div v-if="selectedResult" class="result-body">
             <div class="metrics">
-              <div><b>{{ selectedPageCount }} / {{ selectedTotalPageCount }}</b><span>{{ selectedUsesImageBatch ? "同批图片完成 / 总数" : "已完成 / 总页数" }}</span></div>
+              <div><b>{{ selectedPageCount }} / {{ selectedTotalPageCount }}</b><span>{{ selectedUsesImageBatch ? "同批图片完成 / 总数" : selectedResult.pageRange ? "已完成 / 所选页数" : "已完成 / 总页数" }}</span></div>
               <div><b>{{ selectedBlockCount }}</b><span>文本块</span></div>
               <div><b>{{ selectedTables.length }}</b><span>{{ mergeCrossPageTables && selectedRawTableCount > selectedMergedTableCount ? `跨页合并（原 ${selectedRawTableCount}）` : "表格" }}</span></div>
               <div><b>{{ (selectedElapsedMs / 1000).toFixed(2) }}s</b><span>用时</span></div>

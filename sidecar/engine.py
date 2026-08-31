@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from network_guard import block_python_network
+from document_input import document_inputs, parse_page_range, validate_rotation
 
 
 ProgressCallback = Callable[[str, int | None, str, int | None], None]
@@ -35,6 +36,10 @@ MODEL_PROFILES = {
     },
 }
 TABLE_MODEL_NAMES = ("PicoDet_layout_1x_table", "SLANet_plus")
+
+
+class LocalModelsMissingError(RuntimeError):
+    """Missing offline files are not a failed network download."""
 
 
 def model_names(profile: str, mode: str) -> list[str]:
@@ -460,6 +465,7 @@ class OcrEngine:
         self._mode: str | None = None
         self._native_runtime: Any | None = None
         self._runtime_initialized = False
+        self._model_root: Path | None = None
         self._pause_requested = threading.Event()
         self._cancel_requested = threading.Event()
 
@@ -548,14 +554,22 @@ class OcrEngine:
         profile: str = "fast",
         mode: str = "text",
         progress: ProgressCallback | None = None,
+        local_only: bool = False,
+        model_root: Path | None = None,
     ) -> dict[str, Any]:
         if profile not in MODEL_PROFILES:
             raise ValueError(f"未知模型档位：{profile}")
         if mode not in RECOGNITION_MODES:
             raise ValueError(f"未知识别模式：{mode}")
         model = MODEL_PROFILES[profile]
+        root = (model_root or official_model_cache()).expanduser().resolve()
+        cache = model_cache_status(profile, mode, root)
+        if local_only and not cache["installed"]:
+            missing = "、".join(item["name"] for item in cache["models"] if not item["installed"])
+            raise LocalModelsMissingError(f"缺少本地模型：{missing}。请在联网电脑准备并导出这些模型，再使用“从本地导入模型”；不会联网补下载。")
+        strict_local = local_only or cache["installed"]
         mode_label = "轻量表格与文字" if mode == "table" else model["label"]
-        if self._ocr is not None and self._profile == profile and self._mode == mode:
+        if self._ocr is not None and self._profile == profile and self._mode == mode and self._model_root == root:
             return {
                 "ready": True,
                 "downloaded": False,
@@ -565,18 +579,24 @@ class OcrEngine:
             }
 
         if progress:
-            progress(f"正在检查并下载{mode_label}模型……", None, "status", None)
+            progress(f"正在从本机载入{mode_label}模型……" if strict_local else f"正在检查并下载{mode_label}模型……", None, "status", None)
 
         if self._ocr is not None:
             self.unload()
 
         # PaddleOCR may emit progress information. Keep stdout reserved for NDJSON.
         progress_stream = ModelProgressStream(sys.stderr, model_names(profile, mode), progress)
-        with contextlib.redirect_stdout(progress_stream), contextlib.redirect_stderr(progress_stream):
+        directories: dict[str, Any] = {}
+        for key, name in {"text_detection_model_dir": model["detection"], "text_recognition_model_dir": model["recognition"],
+                          **({"layout_detection_model_dir": "PicoDet_layout_1x_table", "wired_table_structure_recognition_model_dir": "SLANet_plus",
+                              "wireless_table_structure_recognition_model_dir": "SLANet_plus"} if mode == "table" else {})}.items():
+            if next(item["installed"] for item in cache["models"] if item["name"] == name):
+                directories[key] = str(root / name)
+        with contextlib.redirect_stdout(progress_stream), contextlib.redirect_stderr(progress_stream), (block_python_network() if strict_local else contextlib.nullcontext()):
             if mode == "table":
                 from paddleocr import TableRecognitionPipelineV2
                 if progress:
-                    progress("正在创建轻量表格流水线；需要时下载模型……", None, "create_pipeline", None)
+                    progress("正在创建轻量表格流水线（本地模式）……" if strict_local else "正在创建轻量表格流水线；需要时下载模型……", None, "create_pipeline", None)
                 self._ocr = TableRecognitionPipelineV2(
                     layout_detection_model_name="PicoDet_layout_1x_table",
                     wired_table_structure_recognition_model_name="SLANet_plus",
@@ -589,11 +609,12 @@ class OcrEngine:
                     use_ocr_model=True,
                     device="cpu",
                     cpu_threads=max(1, min(os.cpu_count() or 4, 8)),
+                    **directories,
                 )
             else:
                 from paddleocr import PaddleOCR
                 if progress:
-                    progress("正在创建文字识别流水线；需要时下载模型……", None, "create_pipeline", None)
+                    progress("正在创建文字识别流水线（本地模式）……" if strict_local else "正在创建文字识别流水线；需要时下载模型……", None, "create_pipeline", None)
                 self._ocr = PaddleOCR(
                     text_detection_model_name=model["detection"],
                     text_recognition_model_name=model["recognition"],
@@ -602,15 +623,17 @@ class OcrEngine:
                     use_textline_orientation=False,
                     device="cpu",
                     cpu_threads=max(1, min(os.cpu_count() or 4, 8)),
+                    **directories,
                 )
             self._profile = profile
             self._mode = mode
+            self._model_root = root
 
         if progress:
-            progress(f"{mode_label}模型已下载并载入本机内存", None, "status", None)
+            progress(f"{mode_label}模型已从本机载入内存" if strict_local else f"{mode_label}模型已下载并载入本机内存", None, "status", None)
         return {
             "ready": True,
-            "downloaded": True,
+            "downloaded": not strict_local,
             "model": mode_label,
             "profile": profile,
             "mode": mode,
@@ -647,6 +670,8 @@ class OcrEngine:
         mode: str = "text",
         progress: ProgressCallback | None = None,
         on_page: Callable[[dict[str, Any], int, int], None] | None = None,
+        page_range: str = "",
+        rotation: int = 0,
     ) -> dict[str, Any]:
         path = Path(path_value).expanduser().resolve(strict=True)
         if not path.is_file():
@@ -663,21 +688,23 @@ class OcrEngine:
         started = time.perf_counter()
         pages: list[dict[str, Any]] = []
         total_page_count = document_page_count(path)
+        validate_rotation(rotation)
+        selected = parse_page_range(page_range, total_page_count) if path.suffix.lower() == ".pdf" else [0]
+        selected_count = len(selected)
         if progress:
             if path.suffix.lower() == ".pdf":
                 prefix = "开始定位表格、识别文字并恢复结构" if mode == "table" else "开始识别"
-                message = f"已读取 PDF，共 {total_page_count} 页；已封锁 Python 网络连接，{prefix}……"
+                message = f"已读取 PDF，原文共 {total_page_count} 页，本次识别 {selected_count} 页；{prefix}……"
             else:
                 message = (
                     "已封锁 Python 网络连接，开始定位表格、识别文字并恢复结构……"
                     if mode == "table"
                     else "已封锁 Python 网络连接，开始读取本地图片……"
                 )
-            progress(message, 0, "status", total_page_count)
+            progress(message, 0, "status", selected_count)
 
         with block_python_network(), contextlib.redirect_stdout(sys.stderr):
             predict_options: dict[str, Any] = {
-                "input": str(path),
                 "text_rec_score_thresh": score_threshold,
             }
             if mode == "table":
@@ -697,35 +724,42 @@ class OcrEngine:
                         "use_table_orientation_classify": False,
                     }
                 )
-            results = self._ocr.predict_iter(**predict_options)
-            for page_number, result in enumerate(results, start=1):
-                page = extract_table_page(result) if mode == "table" else extract_page(result)
-                if page.get("pageIndex") is None:
-                    page["pageIndex"] = page_number - 1
-                for table in page["tables"]:
-                    table["pageIndex"] = page["pageIndex"]
-                    table["endPageIndex"] = page["pageIndex"]
-                pages.append(page)
-                if on_page:
-                    on_page(page, round((time.perf_counter() - started) * 1000), total_page_count)
-                if progress:
-                    percent = round(page_number / total_page_count * 100)
-                    detail = (
-                        f"，识别到 {len(page['tables'])} 个表格"
-                        if mode == "table"
-                        else ""
-                    )
-                    progress(
-                        f"已完成第 {page_number}/{total_page_count} 页（{percent}%）{detail}",
-                        page_number,
-                        "progress",
-                        total_page_count,
-                    )
-                if self._cancel_requested.is_set():
-                    break
-                self._wait_if_paused(page_number, total_page_count, progress)
-                if self._cancel_requested.is_set():
-                    break
+            with document_inputs(path, selected, rotation) as inputs:
+                iterator = iter(inputs)
+                for page_number in range(1, selected_count + 1):
+                    self._wait_if_paused(len(pages), selected_count, progress)
+                    if self._cancel_requested.is_set():
+                        break
+                    source_index = selected[page_number - 1]
+                    if progress:
+                        progress(f"正在识别原文第 {source_index + 1} 页 · 已完成 {len(pages)}/{selected_count} 页",
+                                 source_index + 1, "source_page", selected_count)
+                    source_index, pixels = next(iterator)
+                    if self._cancel_requested.is_set():
+                        break
+                    # One array is exactly one physical page, so no skipped page
+                    # is sent to OCR and predictor-local page indices are ignored.
+                    results = self._ocr.predict_iter(input=pixels, **predict_options)
+                    try:
+                        result = next(iter(results))
+                        page = extract_table_page(result) if mode == "table" else extract_page(result)
+                    except StopIteration as error:
+                        raise RuntimeError(f"原文第 {source_index + 1} 页未返回识别结果") from error
+                    finally:
+                        if hasattr(results, "close"):
+                            results.close()
+                    page["pageIndex"] = source_index
+                    for table in page["tables"]:
+                        table["pageIndex"] = source_index
+                        table["endPageIndex"] = source_index
+                    pages.append(page)
+                    if on_page:
+                        on_page(page, round((time.perf_counter() - started) * 1000), selected_count)
+                    if progress:
+                        detail = f"，识别到 {len(page['tables'])} 个表格" if mode == "table" else ""
+                        progress(f"原文第 {source_index + 1} 页已完成 · {page_number}/{selected_count} 页（{round(page_number / selected_count * 100)}%）{detail}",
+                                 page_number, "progress", selected_count)
+                    del pixels, result
 
         elapsed_ms = round((time.perf_counter() - started) * 1000)
         tables = merge_cross_page_tables(pages) if mode == "table" else []
@@ -737,6 +771,9 @@ class OcrEngine:
             "text": "\n\n".join(page["text"] for page in pages if page["text"]),
             "pageCount": len(pages),
             "totalPageCount": total_page_count,
+            "selectedPageCount": selected_count,
+            "pageRange": page_range if path.suffix.lower() == ".pdf" else "",
+            "rotation": rotation,
             "blockCount": sum(len(page["blocks"]) for page in pages),
             "tableCount": len(tables),
             "rawTableCount": sum(len(page["tables"]) for page in pages),

@@ -36,11 +36,17 @@ try {
             if(method==='ui_smoke_status') return {enabled:false};
             if(method==='validate_paths') return {items:params.items.map(x=>({id:x.id,exists:true}))};
             if(method==='model_status') return null;
+            if(method==='document_info') return {totalPageCount:12,selectedPageCount:3};
             return {};
           }};` }));
       await page.route("**/src/lib/tauri-bridge.ts*", (route) => route.fulfill({ contentType: "application/javascript", body: `
         export const isWebkitGtk40Build=false;
-        export const localImagePreview=async()=>'';
+        export const localImagePreview=async()=>{
+          const canvas=document.createElement('canvas');canvas.width=800;canvas.height=400;
+          const drawing=canvas.getContext('2d');drawing.fillStyle='#527563';drawing.fillRect(0,0,800,400);
+          drawing.fillStyle='#f0f4e6';drawing.font='48px sans-serif';drawing.fillText('LOCAL OCR',50,100);
+          return canvas.toDataURL('image/png');
+        };
         export const createId=()=>crypto.randomUUID();
         export const openLocalDialog=async()=>null;
         export const listenBeforeClose=async()=>()=>{};
@@ -89,6 +95,19 @@ try {
       const focusFits = await page.locator(".result-panel").evaluate((element)=>element.getBoundingClientRect().bottom <= innerHeight + 2);
       assert.ok(focusFits, "focus mode exceeds viewport");
       await page.screenshot({path:path.join(screenshots,`${screenWidth}-${scale}-table.png`)});
+      await page.getByRole("button", {name:"退出专注模式",exact:true}).click();
+      await page.getByRole("button", {name:"右转 90°",exact:true}).click();
+      await page.waitForFunction(() => {
+        const box = document.querySelector('.rotation-box');
+        return box && box.getBoundingClientRect().height > box.getBoundingClientRect().width;
+      });
+      const rotationFits = await page.evaluate(() => {
+        const image = document.querySelector('.rotation-box img').getBoundingClientRect();
+        const stage = document.querySelector('.rotation-stage').getBoundingClientRect();
+        return image.left >= stage.left && image.right <= stage.right + 1 && image.top >= stage.top && image.bottom <= stage.bottom + 1;
+      });
+      assert.ok(rotationFits, 'rotated preview must fit without clipping');
+      await page.screenshot({path:path.join(screenshots,`${screenWidth}-${scale}-rotation.png`)});
       assert.deepEqual(errors,[]);
       await context.close();
       console.log(`Layout passed: ${screenWidth}x${screenHeight} / ${scale*100}%`);

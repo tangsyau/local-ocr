@@ -235,7 +235,9 @@ class EngineSchemaTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             image_path = Path(temp_dir) / "table.png"
-            image_path.write_bytes(b"not-needed-by-the-fake-pipeline")
+            from PIL import Image
+            with Image.new("RGB", (80, 40), "white") as image:
+                image.save(image_path)
             engine = OcrEngine()
             engine._ocr = FakeTablePipeline()
             engine._profile = "fast"
