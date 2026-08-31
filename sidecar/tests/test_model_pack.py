@@ -165,8 +165,10 @@ class ModelPackTests(unittest.TestCase):
         with patch.dict(sys.modules, {"paddleocr": SimpleNamespace(PaddleOCR=pipeline)}):
             engine = OcrEngine()
             engine.prepare("fast", "text", local_only=True, model_root=self.source)
-        self.assertEqual(captured["text_detection_model_dir"], str(self.source / "PP-OCRv5_mobile_det"))
-        self.assertEqual(captured["text_recognition_model_dir"], str(self.source / "PP-OCRv5_mobile_rec"))
+        # GetTempPath can use RUNNER~1 while resolve() expands runneradmin.
+        # Compare directory identity, not Windows' two spellings of one path.
+        self.assertTrue(Path(captured["text_detection_model_dir"]).samefile(self.source / "PP-OCRv5_mobile_det"))
+        self.assertTrue(Path(captured["text_recognition_model_dir"]).samefile(self.source / "PP-OCRv5_mobile_rec"))
         with self.assertRaisesRegex(RuntimeError, "不会联网补下载"):
             OcrEngine().prepare("accurate", "text", local_only=True, model_root=self.source)
 

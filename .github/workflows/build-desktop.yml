@@ -158,7 +158,9 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: local-ocr-layout-checks
-          path: test-results/layout/*.png
+          path: |
+            test-results/layout/*.png
+            test-results/layout/*.json
           if-no-files-found: ignore
           retention-days: 7
 

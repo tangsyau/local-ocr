@@ -2,7 +2,7 @@
 // (real WebView + real sidecar) is tested separately by smoke-desktop.py.
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createServer } from "vite";
 
@@ -18,6 +18,34 @@ await server.listen();
 let browser;
 const screenshots = path.resolve("test-results/layout");
 await mkdir(screenshots, { recursive: true });
+
+async function assertImageLayout(page, angle) {
+  await page.waitForFunction((rotation) => {
+    const box = document.querySelector('.rotation-box');
+    const image = box?.querySelector('img');
+    if (!box || !image?.complete || !image.naturalWidth) return false;
+    const bounds = box.getBoundingClientRect();
+    if (bounds.width < 1 || bounds.height < 1) return false;
+    const expected = rotation % 180 ? image.naturalHeight / image.naturalWidth : image.naturalWidth / image.naturalHeight;
+    return image.style.transform.includes(`rotate(${rotation}deg)`) && Math.abs(bounds.width / bounds.height - expected) < .02;
+  }, angle);
+  await page.locator('.rotation-stage').scrollIntoViewIfNeeded();
+  const layout = await page.evaluate(() => {
+    const image = document.querySelector('.rotation-box img').getBoundingClientRect();
+    const stage = document.querySelector('.rotation-stage').getBoundingClientRect();
+    const content = document.querySelector('.preview-content').getBoundingClientRect();
+    return {
+      stageHeight: stage.height,
+      fits: image.left >= stage.left - 1 && image.right <= stage.right + 1 && image.top >= stage.top - 1 && image.bottom <= stage.bottom + 1,
+      visibleHeight: Math.min(image.bottom, content.bottom, innerHeight) - Math.max(image.top, content.top, 0),
+      visibleWidth: Math.min(image.right, content.right, innerWidth) - Math.max(image.left, content.left, 0),
+    };
+  });
+  assert.ok(layout.stageHeight >= 155, 'document controls must not collapse the image stage');
+  assert.ok(layout.fits, `rotated ${angle}° preview must fit without clipping`);
+  assert.ok(layout.visibleHeight > 20 && layout.visibleWidth > 20, 'preview must be visible, not only have offscreen dimensions');
+}
+
 try {
   browser = await playwright.chromium.launch();
   for (const [screenWidth, screenHeight] of [[1920, 1080], [1366, 768]]) {
@@ -29,6 +57,8 @@ try {
       const page = await context.newPage();
       const errors = [];
       page.on("pageerror", (error) => errors.push(error.message));
+      const label = `${screenWidth}-${scale}`;
+      try {
       await page.route("**/src/lib/sidecar.ts*", (route) => route.fulfill({ contentType: "application/javascript", body: `
         export class SidecarRequestError extends Error {}
         export const ocrSidecar = { running: true, stderr: '', start: async()=>{}, stop: async()=>{},
@@ -96,21 +126,39 @@ try {
       assert.ok(focusFits, "focus mode exceeds viewport");
       await page.screenshot({path:path.join(screenshots,`${screenWidth}-${scale}-table.png`)});
       await page.getByRole("button", {name:"退出专注模式",exact:true}).click();
-      await page.getByRole("button", {name:"右转 90°",exact:true}).click();
-      await page.waitForFunction(() => {
-        const box = document.querySelector('.rotation-box');
-        return box && box.getBoundingClientRect().height > box.getBoundingClientRect().width;
-      });
-      const rotationFits = await page.evaluate(() => {
-        const image = document.querySelector('.rotation-box img').getBoundingClientRect();
-        const stage = document.querySelector('.rotation-stage').getBoundingClientRect();
-        return image.left >= stage.left && image.right <= stage.right + 1 && image.top >= stage.top && image.bottom <= stage.bottom + 1;
-      });
-      assert.ok(rotationFits, 'rotated preview must fit without clipping');
-      await page.screenshot({path:path.join(screenshots,`${screenWidth}-${scale}-rotation.png`)});
+      await assertImageLayout(page, 0);
+      for (const angle of [90, 180, 270, 0]) {
+        await page.getByRole("button", {name:"右转 90°",exact:true}).click();
+        await assertImageLayout(page, angle);
+        await page.screenshot({path:path.join(screenshots,`${label}-rotation-${angle}.png`)});
+      }
+      if (viewport.width <= 1100) {
+        // Cross the one-/two-column breakpoint without remounting the image.
+        await page.setViewportSize({width:1280,height:800});
+        await assertImageLayout(page, 0);
+        await page.setViewportSize(viewport);
+        await assertImageLayout(page, 0);
+      }
       assert.deepEqual(errors,[]);
-      await context.close();
       console.log(`Layout passed: ${screenWidth}x${screenHeight} / ${scale*100}%`);
+      } catch (error) {
+        console.error(`Layout failed: ${screenWidth}x${screenHeight} / ${scale*100}%`);
+        await page.screenshot({path:path.join(screenshots,`${label}-failed.png`)}).catch(()=>{});
+        const geometry = await page.evaluate(() => Object.fromEntries(
+          ['.content-grid','.preview-panel','.preview-content','.document-controls','.rotation-stage','.rotation-box','.result-panel'].map(selector => {
+            const element = document.querySelector(selector);
+            if (!element) return [selector,null];
+            const box = element.getBoundingClientRect();
+            const style = getComputedStyle(element);
+            return [selector,{x:box.x,y:box.y,width:box.width,height:box.height,clientHeight:element.clientHeight,
+              scrollHeight:element.scrollHeight,display:style.display,overflow:style.overflow,padding:style.padding}];
+          })
+        )).catch(()=>null);
+        await writeFile(path.join(screenshots,`${label}-failed.json`), JSON.stringify({viewport,errors,error:String(error),geometry},null,2));
+        throw error;
+      } finally {
+        await context.close();
+      }
     }
   }
 } finally {

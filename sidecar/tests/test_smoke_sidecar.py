@@ -25,10 +25,21 @@ class SmokeSidecarEncodingTests(unittest.TestCase):
         driver = '''
 import sys
 from types import ModuleType, SimpleNamespace
+import builtins
+import threading
+original_import = builtins.__import__
+def checked_import(name, *args, **kwargs):
+    if name in {"numpy", "PIL.Image", "PIL.ImageOps", "pypdfium2"} and name not in sys.modules:
+        assert threading.current_thread() is threading.main_thread(), name + " cold-imported by a worker"
+    return original_import(name, *args, **kwargs)
+builtins.__import__ = checked_import
 class StubOCR:
     def __init__(self, **kwargs):
         pass
     def predict_iter(self, **kwargs):
+        from PIL import Image
+        assert "PIL.ImageOps" in sys.modules and "pypdfium2" in sys.modules
+        assert {"PNG", "JPEG", "TIFF", "BMP", "WEBP"}.issubset(Image.OPEN)
         yield SimpleNamespace(json={"res": {"rec_texts": ["TEST"], "rec_scores": [0.99]}})
 paddle = ModuleType("paddle")
 paddleocr = ModuleType("paddleocr")
@@ -52,8 +63,8 @@ raise SystemExit(main())
                   patch.dict(SMOKE.os.environ, {"LOCALAPPDATA": directory, "XDG_STATE_HOME": directory})):
                 results, events = SMOKE.run_sidecar(Path(sys.executable), lines, 20, "source-stub")
         self.assertEqual(results["recognize"]["result"]["text"], "TEST")
-        self.assertEqual([entry["event"] for entry in events["prepare"]][:3],
-                         ["import_paddle", "import_paddleocr", "imports_ready"])
+        self.assertEqual([entry["event"] for entry in events["prepare"]][:4],
+                         ["import_paddle", "import_paddleocr", "import_documents", "imports_ready"])
         self.assertTrue(any(entry["event"] == "page_result" for entry in events["recognize"]))
 
     def test_empty_output_queue_reports_request_timeout_and_cleans_process(self) -> None:
@@ -71,6 +82,33 @@ raise SystemExit(main())
                 SMOKE.run_sidecar(Path("fake.exe"), [SMOKE.request("smoke-prepare-fast", "prepare")], 1, "text-fast")
         stop.assert_called_once_with(process)
         self.assertEqual(popen.call_args.kwargs["env"]["LOCAL_OCR_CI_PREPARE_TRACE"], "1")
+        self.assertEqual(popen.call_args.kwargs["env"]["LOCAL_OCR_CI_TRACE_INTERVAL"], "1")
+
+    def test_recognition_timeout_includes_real_worker_stacks(self) -> None:
+        # A real blocked worker verifies that the watchdog runs during recognize,
+        # not just prepare, and that its stderr reaches the parent timeout error.
+        driver = '''
+import threading
+from main import main, OcrEngine
+def stuck(self, path, score, mode, progress, **kwargs):
+    progress("intentional test stall", 0, "status", 1)
+    threading.Event().wait()
+OcrEngine.recognize = stuck
+raise SystemExit(main())
+'''
+        real_popen = SMOKE.subprocess.Popen
+        def launch(_binary: object, **kwargs: object) -> object:
+            return real_popen([sys.executable, "-u", "-c", driver], cwd=ROOT / "sidecar", **kwargs)
+        with tempfile.TemporaryDirectory() as directory:
+            with (patch.object(SMOKE.subprocess, "Popen", side_effect=launch),
+                  patch.object(SMOKE, "write_utf8_stderr"),
+                  patch.dict(SMOKE.os.environ, {"LOCALAPPDATA": directory, "XDG_STATE_HOME": directory}),
+                  self.assertRaises(TimeoutError) as caught):
+                SMOKE.run_sidecar(Path(sys.executable), [SMOKE.request("recognize", "recognize")], 5, "blocked-worker")
+        message = str(caught.exception)
+        self.assertIn("intentional test stall", message)
+        self.assertIn("_run_recognition", message)
+        self.assertIn("in stuck", message)
 
     def test_successful_response_is_not_mistaken_for_timeout(self) -> None:
         process = MagicMock()

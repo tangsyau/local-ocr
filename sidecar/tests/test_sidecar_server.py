@@ -93,8 +93,8 @@ class SidecarServerTests(unittest.TestCase):
     def test_import_failure_clears_busy_state_and_cancels_ci_watchdog(self) -> None:
         server = sidecar_main.SidecarServer()
         with (patch.object(server.engine, "initialize_runtime", side_effect=ImportError("broken runtime")),
-              patch.object(sidecar_main, "start_prepare_trace") as start_trace,
-              patch.object(sidecar_main, "stop_prepare_trace") as stop_trace):
+              patch.object(sidecar_main, "start_operation_trace") as start_trace,
+              patch.object(sidecar_main, "stop_operation_trace") as stop_trace):
             with self.assertRaises(ImportError):
                 server.handle({"id": "prepare", "method": "prepare"})
         self.assertFalse(server.active)
@@ -104,12 +104,36 @@ class SidecarServerTests(unittest.TestCase):
     def test_trace_watchdog_is_disabled_in_normal_app(self) -> None:
         with (patch.dict(sidecar_main.os.environ, {"LOCAL_OCR_CI_PREPARE_TRACE": ""}),
               patch.object(sidecar_main.faulthandler, "dump_traceback_later") as dump):
-            sidecar_main.start_prepare_trace()
+            sidecar_main.start_operation_trace()
         dump.assert_not_called()
-        with (patch.dict(sidecar_main.os.environ, {"LOCAL_OCR_CI_PREPARE_TRACE": "1"}),
+        with (patch.dict(sidecar_main.os.environ, {"LOCAL_OCR_CI_PREPARE_TRACE": "1", "LOCAL_OCR_CI_TRACE_INTERVAL": "60"}),
               patch.object(sidecar_main.faulthandler, "dump_traceback_later") as dump):
-            sidecar_main.start_prepare_trace()
+            sidecar_main.start_operation_trace()
         dump.assert_called_once_with(60, repeat=True, file=sidecar_main.TRACE_STDERR)
+
+    def test_watchdog_interval_is_bounded_and_tolerates_invalid_input(self) -> None:
+        for value, expected in (("6", 6), ("0", 1), ("900", 60), ("invalid", 60)):
+            with (self.subTest(value=value),
+                  patch.dict(sidecar_main.os.environ, {"LOCAL_OCR_CI_PREPARE_TRACE": "1", "LOCAL_OCR_CI_TRACE_INTERVAL": value}),
+                  patch.object(sidecar_main.faulthandler, "dump_traceback_later") as dump):
+                sidecar_main.start_operation_trace()
+                dump.assert_called_once_with(expected, repeat=True, file=sidecar_main.TRACE_STDERR)
+
+    def test_recognition_cancels_watchdog_on_success_and_error(self) -> None:
+        for failure in (None, RuntimeError("test failure")):
+            with self.subTest(failure=failure):
+                server = sidecar_main.SidecarServer()
+                with (patch.object(server.engine, "recognize", return_value={"cancelled": False}, side_effect=failure),
+                      patch.object(sidecar_main, "start_operation_trace") as start,
+                      patch.object(sidecar_main, "stop_operation_trace") as stop,
+                      patch.object(sidecar_main, "emit") as emit,
+                      patch.object(sidecar_main, "record_event"),
+                      contextlib.redirect_stderr(io.StringIO())):
+                    server._run_recognition("recognize", {"path": "sample.png"})
+                start.assert_called_once()
+                stop.assert_called_once()
+                self.assertFalse(server.active)
+                self.assertEqual(emit.call_args.args[0]["type"], "error" if failure else "result")
 
     def test_model_status_remains_responsive_during_preparation(self) -> None:
         server = sidecar_main.SidecarServer()

@@ -106,10 +106,11 @@ class EngineSchemaTests(unittest.TestCase):
         with patch.dict(sys.modules, {
             "paddle": SimpleNamespace(),
             "paddleocr": SimpleNamespace(PaddleOCR=object, TableRecognitionPipelineV2=object),
-        }):
+        }), patch("engine.initialize_document_runtime") as initialize_documents:
             engine.initialize_runtime(lambda *args: events.append(args))
             engine.initialize_runtime(lambda *args: events.append(args))
-        self.assertEqual([entry[2] for entry in events], ["import_paddle", "import_paddleocr", "imports_ready"])
+        initialize_documents.assert_called_once()
+        self.assertEqual([entry[2] for entry in events], ["import_paddle", "import_paddleocr", "import_documents", "imports_ready"])
         self.assertIs(sys.stdout, original_stdout)
 
     def test_runtime_cold_imports_are_rejected_in_worker(self) -> None:

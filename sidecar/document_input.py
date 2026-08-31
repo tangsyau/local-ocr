@@ -3,8 +3,25 @@ from __future__ import annotations
 
 import contextlib
 import re
+import threading
 from pathlib import Path
 from typing import Any, Iterator
+
+
+def initialize_document_runtime() -> None:
+    """Warm native readers and Pillow plugins before stdin resumes on Windows.
+
+    Keep decoding/rendering in the worker, but do not let the first image trigger
+    native module or image-plugin initialization there. This also covers a
+    source test that substitutes Paddle and therefore doesn't import its readers.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        raise RuntimeError("图片与 PDF 依赖首次初始化必须由 sidecar 主线程执行")
+    import numpy  # noqa: F401
+    from PIL import Image, ImageOps  # noqa: F401
+    import pypdfium2  # noqa: F401
+
+    Image.init()
 
 
 def parse_page_range(value: str, total: int) -> list[int]:
@@ -63,7 +80,11 @@ def load_image(path: Path, rotation: int = 0) -> Any:
 @contextlib.contextmanager
 def document_inputs(path: Path, selected: list[int], rotation: int = 0) -> Iterator[Iterator[tuple[int, Any]]]:
     if path.suffix.lower() != ".pdf":
-        yield iter([(0, load_image(path, rotation))])
+        # Match PDF's lazy reader: emit the source-page event and check cancel
+        # before any potentially expensive image decoding starts.
+        def read_image() -> Iterator[tuple[int, Any]]:
+            yield 0, load_image(path, rotation)
+        yield read_image()
         return
     if rotation:
         raise ValueError("本版本仅支持图片旋转，PDF 请保持 0 度")

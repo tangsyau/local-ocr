@@ -11,11 +11,19 @@ function loaded(event: Event): void {
   const image = event.target as HTMLImageElement;
   natural.value = { width: image.naturalWidth, height: image.naturalHeight };
 }
+function measureStage(): void {
+  if (!stage.value) return;
+  const style = getComputedStyle(stage.value);
+  const padding = (value: string) => Number.parseFloat(value) || 0;
+  available.value = {
+    width: Math.max(0, stage.value.clientWidth - padding(style.paddingLeft) - padding(style.paddingRight)),
+    height: Math.max(0, stage.value.clientHeight - padding(style.paddingTop) - padding(style.paddingBottom)),
+  };
+}
 onMounted(() => {
-  observer = new ResizeObserver(() => {
-    if (stage.value) available.value = { width: stage.value.clientWidth - 36, height: stage.value.clientHeight - 36 };
-  });
+  observer = new ResizeObserver(measureStage);
   if (stage.value) observer.observe(stage.value);
+  measureStage();
 });
 onBeforeUnmount(() => observer?.disconnect());
 const dimensions = computed(() => {
@@ -37,7 +45,7 @@ const dimensions = computed(() => {
 </template>
 
 <style scoped>
-.rotation-stage { flex: 1; place-items: center; overflow: hidden; }
+.rotation-stage { flex: 1 0 156px; min-height: 156px; place-items: center; overflow: hidden; }
 .rotation-box { position: relative; }
 .rotation-box img { position: absolute; top: 50%; left: 50%; max-width: none; image-orientation: from-image; }
 </style>

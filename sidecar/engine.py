@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from network_guard import block_python_network
-from document_input import document_inputs, parse_page_range, validate_rotation
+from document_input import document_inputs, initialize_document_runtime, parse_page_range, validate_rotation
 
 
 ProgressCallback = Callable[[str, int | None, str, int | None], None]
@@ -500,6 +500,9 @@ class OcrEngine:
             if progress:
                 progress("Paddle 导入完成，正在导入 PaddleOCR / PaddleX……", None, "import_paddleocr", None)
             from paddleocr import PaddleOCR, TableRecognitionPipelineV2  # noqa: F401
+            if progress:
+                progress("正在主线程初始化图片 / PDF 读取依赖……", None, "import_documents", None)
+            initialize_document_runtime()
         self._runtime_initialized = True
         if progress:
             progress("OCR 依赖导入完成，即将创建模型流水线", None, "imports_ready", None)

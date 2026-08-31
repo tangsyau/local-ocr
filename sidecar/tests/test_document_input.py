@@ -4,17 +4,59 @@ import contextlib
 import hashlib
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from document_input import document_inputs, load_image, parse_page_range, validate_rotation
+from document_input import document_inputs, initialize_document_runtime, load_image, parse_page_range, validate_rotation
 from engine import OcrEngine
 
 
 class DocumentInputTests(unittest.TestCase):
+    def test_document_runtime_registers_image_readers_on_main_thread(self):
+        from PIL import Image
+        with patch.object(Image, "init", wraps=Image.init) as initialize:
+            initialize_document_runtime()
+        initialize.assert_called_once()
+        self.assertTrue({"PNG", "JPEG", "TIFF", "BMP", "WEBP"}.issubset(Image.OPEN))
+
+    def test_document_runtime_rejects_worker_initialization(self):
+        errors = []
+        def attempt():
+            try:
+                initialize_document_runtime()
+            except RuntimeError as error:
+                errors.append(str(error))
+        worker = threading.Thread(target=attempt)
+        worker.start()
+        worker.join(timeout=2)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(len(errors), 1)
+        self.assertIn("主线程", errors[0])
+
+    def test_image_decode_waits_until_iteration(self):
+        with patch("document_input.load_image", return_value="pixels") as decode:
+            with document_inputs(Path("sample.png"), [0], 90) as inputs:
+                decode.assert_not_called()
+                self.assertEqual(next(inputs), (0, "pixels"))
+                decode.assert_called_once_with(Path("sample.png"), 90)
+
+    def test_cancel_before_first_image_does_not_decode(self):
+        engine = OcrEngine()
+        engine._ocr, engine._mode = object(), "text"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "cancelled.png"
+            path.write_bytes(b"not decoded")
+            engine.cancel()
+            with patch("document_input.load_image") as decode:
+                result = engine.recognize(str(path))
+        decode.assert_not_called()
+        self.assertTrue(result["cancelled"])
+        self.assertEqual(result["pageCount"], 0)
+
     def test_ranges_are_physical_sorted_unique_and_strict(self):
         self.assertEqual(parse_page_range("8， 3-5,1,3", 10), [0, 2, 3, 4, 7])
         self.assertEqual(parse_page_range("", 3), [0, 1, 2])

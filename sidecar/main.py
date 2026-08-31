@@ -24,14 +24,18 @@ PROTOCOL_STDOUT = sys.stdout
 TRACE_STDERR = sys.stderr
 
 
-def start_prepare_trace() -> None:
+def start_operation_trace() -> None:
     # Opt-in release-test tracing only, never the user's saved diagnostic log.
     # faulthandler uses a native watchdog, so a blocked Python thread can be seen.
     if os.environ.get("LOCAL_OCR_CI_PREPARE_TRACE") == "1":
-        faulthandler.dump_traceback_later(60, repeat=True, file=TRACE_STDERR)
+        try:
+            interval = max(1, min(60, int(os.environ.get("LOCAL_OCR_CI_TRACE_INTERVAL", "60"))))
+        except ValueError:
+            interval = 60
+        faulthandler.dump_traceback_later(interval, repeat=True, file=TRACE_STDERR)
 
 
-def stop_prepare_trace() -> None:
+def stop_operation_trace() -> None:
     if os.environ.get("LOCAL_OCR_CI_PREPARE_TRACE") == "1":
         faulthandler.cancel_dump_traceback_later()
 
@@ -119,7 +123,7 @@ class SidecarServer:
                 raise RuntimeError("已有模型准备或识别任务正在运行")
             self._initializing = True
         try:
-            start_prepare_trace()
+            start_operation_trace()
             self.engine.initialize_runtime(
                 lambda message, page, event, count: self._progress(request_id, message, page, event, count)
             )
@@ -127,7 +131,7 @@ class SidecarServer:
                 self._worker = threading.Thread(target=self._run_prepare, args=(request_id, params), name="model-prepare", daemon=True)
                 self._worker.start()
         except BaseException:
-            stop_prepare_trace()
+            stop_operation_trace()
             raise
         finally:
             with self._worker_lock:
@@ -148,7 +152,7 @@ class SidecarServer:
             record_event(method, category)
             response = {"id": request_id, "type": "error", "message": str(error), "details": traceback.format_exc(limit=24), "category": category}
         finally:
-            stop_prepare_trace()
+            stop_operation_trace()
             with self._worker_lock:
                 self._worker = None
         emit(response)
@@ -156,6 +160,7 @@ class SidecarServer:
     def _run_recognition(self, request_id: str, params: dict[str, Any]) -> None:
         response: dict[str, Any]
         try:
+            start_operation_trace()
             result = self.engine.recognize(
                 str(params.get("path") or ""),
                 float(params.get("scoreThreshold", 0.5)),
@@ -184,6 +189,7 @@ class SidecarServer:
             }
             record_event("recognize", error_category(error))
         finally:
+            stop_operation_trace()
             with self._worker_lock:
                 self._worker = None
         emit(response)
@@ -298,7 +304,7 @@ class SidecarServer:
             target = os.environ.get("LOCAL_OCR_UI_SMOKE_DIR")
             if not target or not Path(target).is_dir():
                 raise ValueError("UI 测试未启用")
-            report = {"appVersion": "0.8.0", "sidecar": True,
+            report = {"appVersion": "0.8.1", "sidecar": True,
                       "width": int(params.get("width") or 0), "height": int(params.get("height") or 0),
                       "sidebarFits": bool(params.get("sidebarFits"))}
             marker = Path(target) / "ready.tmp"
@@ -383,9 +389,9 @@ if __name__ == "__main__":
         for stream in (sys.stdin, sys.stdout, sys.stderr):
             if hasattr(stream, "reconfigure"):
                 stream.reconfigure(encoding="utf-8", errors="replace")
-        start_prepare_trace()
+        start_operation_trace()
         try:
             raise SystemExit(model_worker_main())
         finally:
-            stop_prepare_trace()
+            stop_operation_trace()
     raise SystemExit(main())

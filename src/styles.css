@@ -221,7 +221,10 @@ textarea { flex: 1 1 0; width: 100%; height: auto; min-height: 0; resize: none; 
 
 @media (max-width: 1100px) {
   .workspace { grid-template-columns: 300px minmax(0, 1fr); }
-  .content-grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(80px, .35fr) minmax(200px, 1fr); padding: 10px; overflow: hidden; }
+  /* Reserve room for the header, document controls AND a visible image.
+     Short/high-DPI windows may scroll the central column; never squeeze the
+     preview to zero to force both panels into one viewport. */
+  .content-grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(340px, .85fr) minmax(280px, 1fr); padding: 10px; overflow-x: hidden; overflow-y: auto; }
   .panel { min-height: 0; }
   .empty-state { min-height: 0; padding: 10px; }
   .empty-state .scan-mark { display: none; }

@@ -102,7 +102,10 @@ def run_sidecar(
         encoding="utf-8",
         errors="replace",
         bufsize=1,
-        env={**os.environ, "LOCAL_OCR_CI_PREPARE_TRACE": "1"},
+        env={**os.environ, "LOCAL_OCR_CI_PREPARE_TRACE": "1",
+             # A 20-second source test must dump stacks before, not after,
+             # its deadline. Long native-model checks keep the 60s interval.
+             "LOCAL_OCR_CI_TRACE_INTERVAL": str(max(1, min(60, request_timeout // 3)))},
         start_new_session=os.name != "nt",
     )
     assert process.stdin is not None and process.stdout is not None and process.stderr is not None
