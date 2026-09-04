@@ -675,6 +675,8 @@ class OcrEngine:
         on_page: Callable[[dict[str, Any], int, int], None] | None = None,
         page_range: str = "",
         rotation: int = 0,
+        completed_pages: list[int] | None = None,
+        stream_pages: bool = False,
     ) -> dict[str, Any]:
         path = Path(path_value).expanduser().resolve(strict=True)
         if not path.is_file():
@@ -688,16 +690,33 @@ class OcrEngine:
         if mode != self._mode:
             raise RuntimeError("识别模式与已载入模型不一致，请重新准备模型")
 
+        source_stat = path.stat()
         started = time.perf_counter()
         pages: list[dict[str, Any]] = []
+        processed_count = 0
+        block_count = 0
+        raw_table_count = 0
         total_page_count = document_page_count(path)
         validate_rotation(rotation)
-        selected = parse_page_range(page_range, total_page_count) if path.suffix.lower() == ".pdf" else [0]
-        selected_count = len(selected)
+        requested_pages = parse_page_range(page_range, total_page_count) if path.suffix.lower() == ".pdf" else [0]
+        completed_source_indices: set[int] = set()
+        if completed_pages is not None:
+            if path.suffix.lower() != ".pdf" or not isinstance(completed_pages, list) or any(
+                type(value) is not int for value in completed_pages
+            ):
+                raise ValueError("续识页码只能用于 PDF，并且必须是整数列表")
+            completed_source_indices = {value - 1 for value in completed_pages}
+            if any(value < 0 for value in completed_source_indices) or not completed_source_indices.issubset(set(requested_pages)):
+                raise ValueError("已完成页码不在本次 PDF 识别范围内")
+        selected = [index for index in requested_pages if index not in completed_source_indices]
+        selected_count = len(requested_pages)
+        completed_count = len(completed_source_indices)
+        remaining_count = len(selected)
         if progress:
             if path.suffix.lower() == ".pdf":
                 prefix = "开始定位表格、识别文字并恢复结构" if mode == "table" else "开始识别"
-                message = f"已读取 PDF，原文共 {total_page_count} 页，本次识别 {selected_count} 页；{prefix}……"
+                resume = f"，已完成 {completed_count} 页、本次继续 {remaining_count} 页" if completed_count else ""
+                message = f"已读取 PDF，原文共 {total_page_count} 页，本次范围 {selected_count} 页{resume}；{prefix}……"
             else:
                 message = (
                     "已封锁 Python 网络连接，开始定位表格、识别文字并恢复结构……"
@@ -729,13 +748,13 @@ class OcrEngine:
                 )
             with document_inputs(path, selected, rotation) as inputs:
                 iterator = iter(inputs)
-                for page_number in range(1, selected_count + 1):
-                    self._wait_if_paused(len(pages), selected_count, progress)
+                for page_number in range(1, remaining_count + 1):
+                    self._wait_if_paused(completed_count + processed_count, selected_count, progress)
                     if self._cancel_requested.is_set():
                         break
                     source_index = selected[page_number - 1]
                     if progress:
-                        progress(f"正在识别原文第 {source_index + 1} 页 · 已完成 {len(pages)}/{selected_count} 页",
+                        progress(f"正在识别原文第 {source_index + 1} 页 · 已完成 {completed_count + processed_count}/{selected_count} 页",
                                  source_index + 1, "source_page", selected_count)
                     source_index, pixels = next(iterator)
                     if self._cancel_requested.is_set():
@@ -755,34 +774,42 @@ class OcrEngine:
                     for table in page["tables"]:
                         table["pageIndex"] = source_index
                         table["endPageIndex"] = source_index
-                    pages.append(page)
+                    processed_count += 1
+                    block_count += len(page["blocks"])
+                    raw_table_count += len(page["tables"])
+                    if not stream_pages:
+                        pages.append(page)
                     if on_page:
                         on_page(page, round((time.perf_counter() - started) * 1000), selected_count)
                     if progress:
                         detail = f"，识别到 {len(page['tables'])} 个表格" if mode == "table" else ""
-                        progress(f"原文第 {source_index + 1} 页已完成 · {page_number}/{selected_count} 页（{round(page_number / selected_count * 100)}%）{detail}",
-                                 page_number, "progress", selected_count)
+                        overall_completed = completed_count + processed_count
+                        progress(f"原文第 {source_index + 1} 页已完成 · {overall_completed}/{selected_count} 页（{round(overall_completed / selected_count * 100)}%）{detail}",
+                                 overall_completed, "progress", selected_count)
                     del pixels, result
 
         elapsed_ms = round((time.perf_counter() - started) * 1000)
-        tables = merge_cross_page_tables(pages) if mode == "table" else []
+        tables = merge_cross_page_tables(pages) if mode == "table" and not stream_pages else []
         return {
             "path": str(path),
             "profile": self._profile,
             "resultType": mode,
             "cancelled": self._cancel_requested.is_set(),
-            "text": "\n\n".join(page["text"] for page in pages if page["text"]),
-            "pageCount": len(pages),
+            "text": "\n\n".join(page["text"] for page in pages if page["text"]) if not stream_pages else "",
+            "pageCount": completed_count + processed_count,
             "totalPageCount": total_page_count,
             "selectedPageCount": selected_count,
             "pageRange": page_range if path.suffix.lower() == ".pdf" else "",
             "rotation": rotation,
-            "blockCount": sum(len(page["blocks"]) for page in pages),
+            "blockCount": block_count,
             "tableCount": len(tables),
-            "rawTableCount": sum(len(page["tables"]) for page in pages),
+            "rawTableCount": raw_table_count,
             "elapsedMs": elapsed_ms,
             "pages": pages,
             "tables": tables,
+            "scoreThreshold": score_threshold,
+            "sourceSizeBytes": source_stat.st_size,
+            "sourceModifiedNs": str(source_stat.st_mtime_ns),
         }
 
 

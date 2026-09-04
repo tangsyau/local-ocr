@@ -79,11 +79,23 @@ class ProjectConfigTests(unittest.TestCase):
             ROOT / "compat" / "webkitgtk-4.0" / "src-tauri" / "Cargo.toml"
         ).read_text(encoding="utf-8")
 
-        self.assertEqual(package["version"], "0.8.1")
+        self.assertEqual(package["version"], "0.9.0")
         self.assertEqual(standard_config["version"], package["version"])
         self.assertEqual(legacy_config["package"]["version"], package["version"])
-        self.assertIn('version = "0.8.1"', standard_cargo)
-        self.assertIn('version = "0.8.1"', legacy_cargo)
+        self.assertIn('version = "0.9.0"', standard_cargo)
+        self.assertIn('version = "0.9.0"', legacy_cargo)
+
+    def test_long_document_resume_and_incremental_storage_are_wired(self) -> None:
+        app = (ROOT / "src" / "App.vue").read_text(encoding="utf-8")
+        engine = (ROOT / "sidecar" / "engine.py").read_text(encoding="utf-8")
+        session = (ROOT / "src" / "lib" / "session.ts").read_text(encoding="utf-8")
+        self.assertIn("completedPages", app)
+        self.assertIn("streamPages: true", app)
+        self.assertIn("按文件名排序", app)
+        self.assertIn("completed_pages", engine)
+        self.assertIn("stream_pages", engine)
+        self.assertIn('indexedDB.open("local-ocr-session", 2)', session)
+        self.assertIn('db.createObjectStore("pages"', session)
 
     def test_model_manager_uses_aligned_columns_and_one_deletion_flow(self) -> None:
         app = (ROOT / "src" / "App.vue").read_text(encoding="utf-8")

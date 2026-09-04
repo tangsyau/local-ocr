@@ -80,38 +80,53 @@ function repeatedHeaderRows(left: OcrTable, right: OcrTable): number {
   return repeated;
 }
 
+/**
+ * Append one physical page to an already merged table list.
+ *
+ * The returned normalized page must be passed back as `previousPageTables` for
+ * the next call. This keeps progressive PDF updates linear instead of merging
+ * every page received so far after each sidecar event.
+ */
+export function appendTablePage(
+  merged: OcrTable[],
+  previousPageTables: OcrTable[],
+  pageTables: OcrTable[],
+  pageIndex: number
+): OcrTable[] {
+  const normalizedPage = pageTables.map((table) => cloneTable(table, pageIndex));
+  if (normalizedPage.length === 1 && previousPageTables.length === 1 && merged.length) {
+    const candidate = merged[merged.length - 1];
+    if (candidate.endPageIndex === pageIndex - 1) {
+      const repeatedRows = repeatedHeaderRows(candidate, normalizedPage[0]);
+      if (repeatedRows) {
+        const continuation = normalizedPage[0].rows.slice(repeatedRows).map((row) => row.map(cloneCell));
+        const existingEnd = Math.max(
+          0,
+          ...candidate.rows.flatMap((row) => row.map((cell) => cell.row + Math.max(1, cell.rowSpan)))
+        );
+        const continuationStart = Math.min(
+          existingEnd,
+          ...continuation.flatMap((row) => row.map((cell) => cell.row))
+        );
+        const offset = existingEnd - continuationStart;
+        for (const row of continuation) for (const cell of row) cell.row += offset;
+        candidate.rows.push(...continuation);
+        candidate.endPageIndex = pageIndex;
+        candidate.sourceTableCount += 1;
+        return normalizedPage;
+      }
+    }
+  }
+  merged.push(...normalizedPage);
+  return normalizedPage;
+}
+
 export function mergeTablePages(pages: OcrTable[][], pageIndices?: number[]): OcrTable[] {
   const merged: OcrTable[] = [];
   let previousPageTables: OcrTable[] = [];
   pages.forEach((pageTables, ordinal) => {
     const pageIndex = pageIndices?.[ordinal] ?? ordinal;
-    const normalizedPage = pageTables.map((table) => cloneTable(table, pageIndex));
-    if (normalizedPage.length === 1 && previousPageTables.length === 1 && merged.length) {
-      const candidate = merged[merged.length - 1];
-      if (candidate.endPageIndex === pageIndex - 1) {
-        const repeatedRows = repeatedHeaderRows(candidate, normalizedPage[0]);
-        if (repeatedRows) {
-          const continuation = normalizedPage[0].rows.slice(repeatedRows).map((row) => row.map(cloneCell));
-          const existingEnd = Math.max(
-            0,
-            ...candidate.rows.flatMap((row) => row.map((cell) => cell.row + Math.max(1, cell.rowSpan)))
-          );
-          const continuationStart = Math.min(
-            existingEnd,
-            ...continuation.flatMap((row) => row.map((cell) => cell.row))
-          );
-          const offset = existingEnd - continuationStart;
-          for (const row of continuation) for (const cell of row) cell.row += offset;
-          candidate.rows.push(...continuation);
-          candidate.endPageIndex = pageIndex;
-          candidate.sourceTableCount += 1;
-          previousPageTables = normalizedPage;
-          return;
-        }
-      }
-    }
-    merged.push(...normalizedPage);
-    previousPageTables = normalizedPage;
+    previousPageTables = appendTablePage(merged, previousPageTables, pageTables, pageIndex);
   });
   return merged;
 }

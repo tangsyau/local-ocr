@@ -27,12 +27,14 @@ class FakeEngine:
         self.release = threading.Event()
         self.pause_called = False
         self.cancel_called = False
+        self.last_kwargs: dict[str, Any] = {}
 
     def reset_job_control(self) -> None:
         self.pause_called = False
         self.cancel_called = False
 
     def recognize(self, path: str, score: float, mode: str, progress: Any, on_page: Any = None, **kwargs: Any) -> dict[str, Any]:
+        self.last_kwargs = kwargs
         self.started.set()
         if on_page:
             on_page({"pageIndex": 0, "text": "ok", "blocks": [], "tables": []}, 1, 3)
@@ -219,6 +221,30 @@ class SidecarServerTests(unittest.TestCase):
         page_result = next(message for message in messages if message.get("event") == "page_result")
         self.assertEqual(page_result["pageResult"]["text"], "ok")
         self.assertEqual(page_result["pageCount"], 3)
+
+    def test_recognition_forwards_streaming_resume_parameters(self) -> None:
+        server = sidecar_main.SidecarServer()
+        fake = FakeEngine()
+        server.engine = fake  # type: ignore[assignment]
+        messages: list[dict[str, Any]] = []
+        with patch.object(sidecar_main, "emit", messages.append):
+            server.handle({
+                "id": "resume",
+                "method": "recognize",
+                "params": {
+                    "path": "input.pdf",
+                    "completedPages": [1, 3],
+                    "streamPages": True,
+                },
+            })
+            self.assertTrue(fake.started.wait(timeout=1))
+            fake.release.set()
+            deadline = time.monotonic() + 2
+            while server.active and time.monotonic() < deadline:
+                time.sleep(0.01)
+
+        self.assertEqual(fake.last_kwargs["completed_pages"], [1, 3])
+        self.assertTrue(fake.last_kwargs["stream_pages"])
 
 
 if __name__ == "__main__":

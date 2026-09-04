@@ -174,6 +174,8 @@ class SidecarServer:
                 }),
                 page_range=str(params.get("pageRange") or ""),
                 rotation=params.get("rotation", 0),
+                completed_pages=params.get("completedPages"),
+                stream_pages=bool(params.get("streamPages")),
             )
             response = {"id": request_id, "type": "result", "result": result}
             record_event("recognize", "cancelled" if result.get("cancelled") else "ok")
@@ -274,7 +276,13 @@ class SidecarServer:
                 raise ValueError("页码设置仅用于 PDF 文件")
             total = document_page_count(path)
             selected = parse_page_range(str(params.get("pageRange") or ""), total)
-            result = {"totalPageCount": total, "selectedPageCount": len(selected)}
+            source_stat = path.stat()
+            result = {
+                "totalPageCount": total,
+                "selectedPageCount": len(selected),
+                "sourceSizeBytes": source_stat.st_size,
+                "sourceModifiedNs": str(source_stat.st_mtime_ns),
+            }
         elif method == "delete_models":
             if self.active:
                 raise RuntimeError("识别期间不能删除模型")
@@ -304,7 +312,7 @@ class SidecarServer:
             target = os.environ.get("LOCAL_OCR_UI_SMOKE_DIR")
             if not target or not Path(target).is_dir():
                 raise ValueError("UI 测试未启用")
-            report = {"appVersion": "0.8.1", "sidecar": True,
+            report = {"appVersion": "0.9.0", "sidecar": True,
                       "width": int(params.get("width") or 0), "height": int(params.get("height") or 0),
                       "sidebarFits": bool(params.get("sidebarFits"))}
             marker = Path(target) / "ready.tmp"

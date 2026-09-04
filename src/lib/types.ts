@@ -43,6 +43,9 @@ export interface OcrResult {
   selectedPageCount?: number;
   pageRange?: string;
   rotation?: number;
+  scoreThreshold?: number;
+  sourceSizeBytes?: number;
+  sourceModifiedNs?: string;
   blockCount: number;
   tableCount: number;
   rawTableCount: number;
@@ -125,4 +128,8 @@ export interface OcrTask {
   rotation?: number;
   sourcePageCount?: number;
   sourcePage?: number;
+  sourceSizeBytes?: number;
+  sourceModifiedNs?: string;
+  resumePending?: boolean;
+  resultGeneration?: number;
 }

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import sys
 import io
 import os
@@ -251,6 +252,45 @@ class EngineSchemaTests(unittest.TestCase):
         self.assertFalse(captured["use_table_orientation_classify"])
         self.assertTrue(captured["use_layout_detection"])
         self.assertTrue(captured["use_ocr_model"])
+
+    def test_streamed_pdf_resume_only_decodes_unfinished_pages(self) -> None:
+        captured_selected: list[int] = []
+        streamed: list[dict[str, object]] = []
+
+        class FakePipeline:
+            def predict_iter(self, **kwargs: object) -> object:
+                return iter([FakeResult()])
+
+        @contextlib.contextmanager
+        def fake_inputs(path: Path, selected: list[int], rotation: int = 0):
+            captured_selected.extend(selected)
+            yield iter((index, object()) for index in selected)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pdf_path = Path(temp_dir) / "resume.pdf"
+            pdf_path.write_bytes(b"placeholder")
+            engine = OcrEngine()
+            engine._ocr = FakePipeline()
+            engine._profile = "fast"
+            engine._mode = "text"
+            with (
+                patch("engine.document_page_count", return_value=5),
+                patch("engine.document_inputs", side_effect=fake_inputs),
+            ):
+                result = engine.recognize(
+                    str(pdf_path),
+                    page_range="1-5",
+                    completed_pages=[1, 2],
+                    stream_pages=True,
+                    on_page=lambda page, *_: streamed.append(page),
+                )
+
+        self.assertEqual(captured_selected, [2, 3, 4])
+        self.assertEqual(len(streamed), 3)
+        self.assertEqual(result["pageCount"], 5)
+        self.assertEqual(result["selectedPageCount"], 5)
+        self.assertEqual(result["pages"], [])
+        self.assertEqual(result["text"], "")
 
     def test_repeated_headers_merge_adjacent_single_table_pages(self) -> None:
         def table(page_index: int, header: str, value: str) -> dict[str, object]:

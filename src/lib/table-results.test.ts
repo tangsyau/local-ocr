@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { imageBatchTables, mergeTablePages } from "./table-results";
+import { appendTablePage, imageBatchTables, mergeTablePages } from "./table-results";
 import type { OcrResult, OcrTable } from "./types";
 
 function table(pageIndex: number, value: string): OcrTable {
@@ -20,6 +20,15 @@ describe("physical page identity", () => {
     expect(result[0].pageIndex).toBe(3);
     expect(result[0].endPageIndex).toBe(4);
     expect(result[0].rows).toHaveLength(3);
+  });
+  it("incremental merging matches a full merge", () => {
+    const pages = [[table(3, "甲")], [table(4, "乙")], [table(5, "丙")]];
+    const incremental: OcrTable[] = [];
+    let previous: OcrTable[] = [];
+    pages.forEach((page, index) => {
+      previous = appendTablePage(incremental, previous, page, index + 3);
+    });
+    expect(incremental).toEqual(mergeTablePages(pages, [3, 4, 5]));
   });
   it("image batches still use sequence positions, with empty tasks as gaps", () => {
     const a = { pages: [{ tables: [table(0, "甲")] }] } as OcrResult;

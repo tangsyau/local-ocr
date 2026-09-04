@@ -1,7 +1,7 @@
 {
   "name": "local-ocr",
   "private": true,
-  "version": "0.8.1",
+  "version": "0.9.0",
   "type": "module",
   "scripts": {
     "dev": "vite --port 1420",
@@ -27,6 +27,7 @@
     "@types/node": "^24.0.0",
     "@vitejs/plugin-vue": "^6.0.0",
     "@vue/test-utils": "^2.4.6",
+    "fake-indexeddb": "6.2.5",
     "happy-dom": "^20.8.4",
     "typescript": "^5.8.0",
     "vite": "^7.0.0",

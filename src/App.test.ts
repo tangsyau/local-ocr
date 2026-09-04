@@ -58,7 +58,12 @@ beforeEach(() => {
     if (method === "validate_paths") return { items: params.items.map((item: { id: string }) => ({ id: item.id, exists: true })) };
     if (method === "ui_smoke_status") return { enabled: false };
     if (method === "model_status") return null;
-    if (method === "document_info") return { totalPageCount: 10, selectedPageCount: params.pageRange ? 3 : 10 };
+    if (method === "document_info") return {
+      totalPageCount: 10,
+      selectedPageCount: params.pageRange ? 3 : 10,
+      sourceSizeBytes: 100,
+      sourceModifiedNs: "200"
+    };
     if (method === "cancel") { mock.jobs[mock.jobs.length - 1]?.resolve(result("部分结果", true)); return {}; }
     return {};
   });
@@ -113,8 +118,9 @@ describe("batch and recovery interactions", () => {
 
   it("does not overwrite previous corrections when rerun fails before its first page", async () => {
     mock.load.mockResolvedValue({ schema: 1, selectedTaskId: "old", settings: defaultSettings,
-      tasks: [{ id: "old", batchId: "old", batchIndex: 0, path: "/old.png", fileName: "old.png", status: "completed", resultType: "text", result: result("历史校对"), textEdited: true }] });
+      tasks: [{ id: "old", batchId: "old", batchIndex: 0, path: "/old.png", fileName: "old.png", status: "completed", resultType: "text", result: result("历史校对"), textEdited: true, resultGeneration: 7 }] });
     wrapper = mount(App); await flushPromises();
+    await wrapper.find<HTMLInputElement>('input[value="table"]').setValue(true); await flushPromises();
     await button("重新识别当前文件").trigger("click");
     window.confirm = vi.fn(() => false);
     await button("开始批量").trigger("click"); await flushPromises();
@@ -124,6 +130,11 @@ describe("batch and recovery interactions", () => {
     await button("开始批量").trigger("click"); await flushPromises();
     mock.jobs[0].reject(new Error("model failed")); await flushPromises();
     expect(wrapper.find<HTMLTextAreaElement>("textarea").element.value).toBe("历史校对");
+    await new Promise((resolve) => setTimeout(resolve, 450)); await flushPromises();
+    const saved = mock.save.mock.calls.at(-1)![0];
+    expect(saved.tasks[0].resultType).toBe("text");
+    expect(saved.tasks[0].textEdited).toBe(true);
+    expect(saved.tasks[0].resultGeneration).toBe(7);
   });
 
   it("shows autosave in the header without duplicating it in the footer", async () => {
@@ -225,5 +236,56 @@ describe("batch and recovery interactions", () => {
     await button("全选 / 取消").trigger("click");
     await button("移除勾选").trigger("click");
     expect(wrapper.findAll(".task-item")).toHaveLength(0);
+  });
+
+  it("naturally sorts numbered scan files", async () => {
+    wrapper = mount(App); await flushPromises();
+    mock.dropped!(["/scan10.png", "/scan2.png", "/scan1.png"]); await flushPromises();
+    await button("按文件名排序").trigger("click");
+    expect(wrapper.findAll(".task-name").map((item) => item.text()))
+      .toEqual(["scan1.png", "scan2.png", "scan10.png"]);
+  });
+
+  it("continues only unfinished PDF pages when the saved input and settings match", async () => {
+    const partial: OcrResult = {
+      path: "/resume.pdf", profile: "fast", resultType: "text", cancelled: true,
+      text: "已完成第二页", pageCount: 1, totalPageCount: 10, selectedPageCount: 3,
+      pageRange: "2,4-5", rotation: 0, scoreThreshold: 0.5,
+      sourceSizeBytes: 100, sourceModifiedNs: "200",
+      blockCount: 0, rawTableCount: 0, tableCount: 0, elapsedMs: 10,
+      pages: [{ pageIndex: 1, text: "已完成第二页", blocks: [], tables: [] }], tables: []
+    };
+    mock.load.mockResolvedValue({
+      schema: 1,
+      selectedTaskId: "resume",
+      settings: defaultSettings,
+      tasks: [{
+        id: "resume", batchId: "resume", batchIndex: 0,
+        path: "/resume.pdf", fileName: "resume.pdf", status: "cancelled",
+        resultType: "text", result: partial, pageRange: "2,4-5", rotation: 0,
+        resumePending: true
+      }]
+    });
+    wrapper = mount(App); await flushPromises();
+    await wrapper.findAll(".task-actions button").find((item) => item.text() === "重试")!.trigger("click");
+    await button("开始批量").trigger("click"); await flushPromises();
+    const call = mock.request.mock.calls.find((item) => item[0] === "recognize");
+    expect(call?.[1].completedPages).toEqual([2]);
+    expect(call?.[1].streamPages).toBe(true);
+    mock.jobs[0].onEvent!({
+      event: "page_result", pageCount: 3, elapsedMs: 20,
+      pageResult: { pageIndex: 3, text: "新增第四页", blocks: [], tables: [] }
+    });
+    mock.jobs[0].resolve({
+      ...partial,
+      cancelled: false,
+      text: "",
+      pageCount: 3,
+      pages: [],
+      elapsedMs: 20
+    });
+    await flushPromises();
+    expect(wrapper.find<HTMLTextAreaElement>("textarea").element.value)
+      .toBe("已完成第二页\n\n新增第四页");
   });
 });
