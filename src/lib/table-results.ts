@@ -6,6 +6,7 @@ export function rawTables(result: OcrResult | null): OcrTable[] {
 
 export function displayTables(result: OcrResult | null, mergeCrossPage: boolean): OcrTable[] {
   if (!result) return [];
+  if (result.partial) return result.tables;
   return mergeCrossPage ? result.tables : rawTables(result);
 }
 

@@ -168,12 +168,14 @@ class SidecarServer:
                 lambda message, page, event, page_count: self._progress(
                     request_id, message, page, event, page_count
                 ),
-                on_page=lambda page, elapsed, total: emit({
+                on_page=lambda page, elapsed, total, completed=None: emit({
                     "id": request_id, "type": "event", "event": "page_result",
                     "pageResult": page, "elapsedMs": elapsed, "pageCount": total,
+                    "page": completed,
                 }),
                 page_range=str(params.get("pageRange") or ""),
                 rotation=params.get("rotation", 0),
+                completed_pages=list(params.get("completedPages") or []),
             )
             response = {"id": request_id, "type": "result", "result": result}
             record_event("recognize", "cancelled" if result.get("cancelled") else "ok")
@@ -274,7 +276,9 @@ class SidecarServer:
                 raise ValueError("页码设置仅用于 PDF 文件")
             total = document_page_count(path)
             selected = parse_page_range(str(params.get("pageRange") or ""), total)
-            result = {"totalPageCount": total, "selectedPageCount": len(selected)}
+            source_stat = path.stat()
+            result = {"totalPageCount": total, "selectedPageCount": len(selected),
+                      "sourceSize": source_stat.st_size, "sourceMtimeNs": str(source_stat.st_mtime_ns)}
         elif method == "delete_models":
             if self.active:
                 raise RuntimeError("识别期间不能删除模型")
@@ -289,9 +293,15 @@ class SidecarServer:
         elif method == "export_diagnostics":
             result = export_diagnostics(str(params.get("directory") or ""), diagnostic_info(self.engine))
         elif method == "validate_paths":
-            result = {"items": [{"id": str(item.get("id") or ""),
-                                  "exists": Path(str(item.get("path") or "")).is_file()}
-                                 for item in list(params.get("items") or [])]}
+            checked = []
+            for item in list(params.get("items") or []):
+                path = Path(str(item.get("path") or ""))
+                exists = path.is_file()
+                source_stat = path.stat() if exists else None
+                checked.append({"id": str(item.get("id") or ""), "exists": exists,
+                                "sourceSize": source_stat.st_size if source_stat else None,
+                                "sourceMtimeNs": str(source_stat.st_mtime_ns) if source_stat else None})
+            result = {"items": checked}
         elif method == "export_preview":
             result = preview_exports(params)
         elif method == "export_results":
@@ -304,7 +314,7 @@ class SidecarServer:
             target = os.environ.get("LOCAL_OCR_UI_SMOKE_DIR")
             if not target or not Path(target).is_dir():
                 raise ValueError("UI 测试未启用")
-            report = {"appVersion": "0.8.1", "sidecar": True,
+            report = {"appVersion": "0.9.0", "sidecar": True,
                       "width": int(params.get("width") or 0), "height": int(params.get("height") or 0),
                       "sidebarFits": bool(params.get("sidebarFits"))}
             marker = Path(target) / "ready.tmp"

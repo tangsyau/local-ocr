@@ -161,3 +161,33 @@ class DocumentInputTests(unittest.TestCase):
         self.assertTrue(result["cancelled"])
         self.assertEqual(result["pageCount"], 1)
         self.assertEqual(calls, ["first"])
+
+    def test_resume_skips_only_a_completed_selected_page_prefix(self):
+        calls, progress, completed = [], [], []
+        engine = OcrEngine()
+        fake = SimpleNamespace(json={"res": {"rec_texts": ["next"]}})
+        class Pipeline:
+            def predict_iter(self, **kwargs):
+                calls.append(kwargs["input"])
+                return iter([fake])
+        engine._ocr, engine._profile, engine._mode = Pipeline(), "fast", "text"
+        @contextlib.contextmanager
+        def inputs(path, selected, rotation):
+            self.assertEqual(selected, [2, 4])
+            yield iter((index, f"pixels-{index}") for index in selected)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "sample.pdf"
+            path.write_bytes(b"stub")
+            with patch("engine.document_page_count", return_value=6), patch("engine.document_inputs", inputs):
+                result = engine.recognize(str(path), page_range="1,3,5", completed_pages=[0],
+                    progress=lambda *event: progress.append(event), on_page=lambda *event: completed.append(event))
+        self.assertEqual(calls, ["pixels-2", "pixels-4"])
+        self.assertEqual([page["pageIndex"] for page in result["pages"]], [2, 4])
+        self.assertEqual(result["completedPageCount"], 3)
+        self.assertEqual([event[1] for event in progress if event[2] == "progress"], [2, 3])
+        self.assertEqual([event[3] for event in completed], [2, 3])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "invalid.pdf"
+            path.write_bytes(b"stub")
+            with patch("engine.document_page_count", return_value=6), self.assertRaisesRegex(ValueError, "连续完成的前缀"):
+                engine.recognize(str(path), page_range="1,3,5", completed_pages=[2])

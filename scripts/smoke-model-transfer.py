@@ -37,6 +37,7 @@ def main() -> None:
             smoke.request("pack-import", "import_model_pack", {"directory": str(pack_path)}),
             smoke.request("local-prepare", "prepare", {"profile": "fast", "mode": "text", "localOnly": True}),
             smoke.request("selected-pages", "recognize", {"path": str(pdf_path), "pageRange": "1,3", "mode": "text"}),
+            smoke.request("resume-selected-pages", "recognize", {"path": str(pdf_path), "pageRange": "1,3", "mode": "text", "completedPages": [0]}),
             smoke.request("rotated-image", "recognize", {"path": str(png_path), "rotation": 90, "mode": "text"}),
             smoke.request("done", "shutdown"),
         ]
@@ -53,8 +54,13 @@ def main() -> None:
         progress = [event for event in events["selected-pages"] if event.get("event") == "progress"]
         assert [event["page"] for event in progress] == [1, 2]
         assert all(event["pageCount"] == 2 for event in progress)
+        resumed = results["resume-selected-pages"]["result"]
+        assert [page["pageIndex"] for page in resumed["pages"]] == [2]
+        assert resumed["pageCount"] == 1 and resumed["completedPageCount"] == 2
+        resumed_progress = [event for event in events["resume-selected-pages"] if event.get("event") == "progress"]
+        assert [event["page"] for event in resumed_progress] == [2]
         assert results["rotated-image"]["result"]["rotation"] == 90
-        print("Frozen model export/import, local-only preparation, PDF selection and rotation passed")
+        print("Frozen model export/import, local-only preparation, PDF selection/resume and rotation passed")
 
 
 if __name__ == "__main__":

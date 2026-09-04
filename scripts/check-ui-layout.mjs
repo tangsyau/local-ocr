@@ -106,6 +106,10 @@ try {
         });
       });
       await page.reload();
+      // Wait for schema-1 inline pages to migrate, then prove schema-2 can
+      // hydrate the page store after a real browser reload.
+      await page.getByText("已自动保存", { exact: true }).waitFor();
+      await page.reload();
       await page.getByRole("button", { name: "表格 1", exact: true }).click();
       const scrollInfo = await page.evaluate(() => {
         const top = document.querySelector(".table-top-scroll");

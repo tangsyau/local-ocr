@@ -4,8 +4,10 @@ import TableResultViewer from "./components/TableResultViewer.vue";
 import ImagePreview from "./components/ImagePreview.vue";
 import { ocrSidecar, SidecarRequestError } from "./lib/sidecar";
 import { displayTables, imageBatchTables, mergeTablePages, tableToTsv } from "./lib/table-results";
+import { naturalPathCompare, naturalSortPaths } from "./lib/file-order";
+import { appendResultPage, beginStreamingResult, canResumeResult, completeStreamingResult, finalizeResult } from "./lib/result-state";
 import { localImagePreview, createId, isWebkitGtk40Build, listenBeforeClose, listenFileDrop, openLocalDialog } from "./lib/tauri-bridge";
-import { loadSession, saveSession, type AppSettings, type SavedSession } from "./lib/session";
+import { loadSession, saveSession, sessionHeader, type AppSettings, type PageCheckpoint, type SavedSession } from "./lib/session";
 import type { DiagnosticInfo, ModelCacheStatus, ModelProfile, OcrPage, OcrResult, OcrTable, OcrTask, OcrTaskStatus, RecognitionMode, SidecarEvent } from "./lib/types";
 
 type AppPhase = "starting" | "idle" | "preparing" | "recognizing" | "paused" | "error";
@@ -40,6 +42,8 @@ let sessionLoaded = false;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let saveChain: Promise<void> = Promise.resolve();
 let saveSequence = 0;
+const pendingPageSaves = new Map<string, PageCheckpoint>();
+const pendingPageResets = new Set<string>();
 const cleanupListeners: Array<() => void> = [];
 let skipRequestedTaskId = "";
 let activeTaskId = "";
@@ -178,6 +182,10 @@ onMounted(async () => {
       applySettings(saved.settings);
     }
     sessionLoaded = true;
+    if (saved?.needsPageMigration) {
+      for (const task of saved.tasks) for (const page of task.result?.pages ?? []) queuePageSave(task.id, page);
+      void flushSave().catch(() => {});
+    }
     saveStatus.value = saved ? `已恢复 ${saved.tasks.length} 个任务；未完成项等待手动开始` : "任务和校对内容将自动保存在本机";
     savePhase.value = saved ? "saved" : "idle";
   } catch (error) {
@@ -245,13 +253,17 @@ async function flushSave(): Promise<void> {
   if (!sessionLoaded) throw new Error("自动保存尚未就绪");
   const sequence = ++saveSequence;
   savePhase.value = "saving";
-  const snapshot: SavedSession = JSON.parse(JSON.stringify({
-    schema: 1, savedAt: new Date().toISOString(), selectedTaskId: selectedTaskId.value, tasks: tasks.value,
+  const snapshot = sessionHeader({
+    schema: 2, savedAt: new Date().toISOString(), selectedTaskId: selectedTaskId.value, tasks: tasks.value,
     settings: { profile: modelProfile.value, mode: recognitionMode.value, threshold: scoreThreshold.value,
       merge: mergeCrossPageTables.value, formats: outputFormats(), exportGrouping: exportGrouping.value,
       exportCollision: exportCollision.value, exportPrefix: exportPrefix.value, exportSuffix: exportSuffix.value, exportName: exportName.value, localModelsOnly: localModelsOnly.value }
-  }));
-  saveChain = saveChain.catch(() => {}).then(() => saveSession(snapshot));
+  });
+  const pages = [...pendingPageSaves.values()];
+  const resets = [...pendingPageResets];
+  pendingPageSaves.clear();
+  pendingPageResets.clear();
+  saveChain = saveChain.catch(() => {}).then(() => saveSession(snapshot, { pages, resetTaskIds: resets }));
   try {
     await saveChain;
     if (sequence === saveSequence) {
@@ -260,6 +272,10 @@ async function flushSave(): Promise<void> {
       savePhase.value = "saved";
     }
   } catch (error) {
+    for (const page of pages) if (!pendingPageSaves.has(`${page.taskId}:${page.pageIndex}`)) {
+      pendingPageSaves.set(`${page.taskId}:${page.pageIndex}`, page);
+    }
+    for (const taskId of resets) pendingPageResets.add(taskId);
     if (sequence === saveSequence) {
       saveFailed.value = true;
       savePhase.value = "error";
@@ -267,6 +283,16 @@ async function flushSave(): Promise<void> {
     }
     throw error;
   }
+}
+
+function queuePageSave(taskId: string, page: OcrPage): void {
+  const plainPage = JSON.parse(JSON.stringify(page)) as OcrPage;
+  pendingPageSaves.set(`${taskId}:${Number(page.pageIndex)}`, { taskId, pageIndex: Number(page.pageIndex), page: plainPage });
+}
+
+function resetSavedPages(taskId: string): void {
+  pendingPageResets.add(taskId);
+  for (const key of [...pendingPageSaves.keys()]) if (key.startsWith(`${taskId}:`)) pendingPageSaves.delete(key);
 }
 
 async function beforeClose(): Promise<boolean> {
@@ -282,12 +308,16 @@ async function beforeClose(): Promise<boolean> {
 
 async function validateTaskPaths(): Promise<void> {
   if (!tasks.value.length || !ocrSidecar.running) return;
-  const result = await ocrSidecar.request<{ items: Array<{ id: string; exists: boolean }> }>("validate_paths", {
+  const result = await ocrSidecar.request<{ items: Array<{ id: string; exists: boolean; sourceSize?: number; sourceMtimeNs?: string }> }>("validate_paths", {
     items: tasks.value.map((task) => ({ id: task.id, path: task.path }))
   });
   for (const item of result.items) {
     const task = tasks.value.find((candidate) => candidate.id === item.id);
-    if (task) task.missing = !item.exists;
+    if (task) {
+      task.missing = !item.exists;
+      task.sourceSize = item.sourceSize;
+      task.sourceMtimeNs = item.sourceMtimeNs;
+    }
   }
 }
 
@@ -330,13 +360,16 @@ async function applyPageRange(toChecked = false): Promise<void> {
     const updates = [];
     for (const task of targets) {
       try {
-        const info = await ocrSidecar.request<{ totalPageCount: number; selectedPageCount: number }>("document_info", { path: task.path, pageRange: range });
+        const info = await ocrSidecar.request<{ totalPageCount: number; selectedPageCount: number; sourceSize: number; sourceMtimeNs: string }>("document_info", { path: task.path, pageRange: range });
         updates.push({ task, info });
       } catch (error) { throw new Error(`${task.fileName}：${error instanceof Error ? error.message : String(error)}`); }
     }
     for (const { task, info } of updates) {
       task.pageRange = range;
       task.sourcePageCount = info.totalPageCount;
+      task.sourceSize = info.sourceSize;
+      task.sourceMtimeNs = info.sourceMtimeNs;
+      task.resumeEligible = false;
     }
     status.value = `已设置 ${targets.length} 个 PDF 的识别范围：${range || "全部页"}；已有结果保留，再次识别时生效。`;
   } catch (error) {
@@ -349,6 +382,7 @@ function rotateImage(delta: number | null, toChecked = false): void {
   const angle = delta === null ? 0 : ((selectedTask.value.rotation ?? 0) + delta + 360) % 360;
   const targets = toChecked ? tasks.value.filter(task => checkedTaskIds.value.includes(task.id) && !isPdfPath(task.path)) : [selectedTask.value];
   for (const task of targets) task.rotation = angle;
+  for (const task of targets) task.resumeEligible = false;
   status.value = `已设置 ${targets.length} 张图片的旋转角度为 ${angle}°；不修改原文件，再次识别时生效。`;
 }
 
@@ -357,6 +391,11 @@ function requeueSelected(): void {
   if (!task || modelControlsBusy.value) return;
   task.status = "queued";
   task.error = undefined;
+  task.resumeEligible = false;
+  if (task.result) {
+    recognitionMode.value = task.resultType;
+    modelProfile.value = task.result.profile;
+  }
   status.value = "已加入等待队列；点击开始批量识别后，将确认替换旧结果。";
 }
 
@@ -378,13 +417,13 @@ function addFiles(paths: string[]): void {
   const existing = new Set(tasks.value.map((task) => key(task.path)));
   const batchId = createId();
   const additions: OcrTask[] = [];
-  for (const [batchIndex, path] of paths.entries()) {
+  for (const path of naturalSortPaths(paths)) {
     if (!/\.(png|jpe?g|webp|bmp|tiff?|pdf)$/i.test(path) || existing.has(key(path))) continue;
     existing.add(key(path));
     additions.push({
       id: createId(),
       batchId,
-      batchIndex,
+      batchIndex: additions.length,
       path,
       fileName: path.split(/[\\/]/).pop() ?? path,
       status: "queued",
@@ -410,9 +449,25 @@ function removeTasks(ids: string[]): void {
   const targets = tasks.value.filter((task) => ids.includes(task.id) && !["running", "paused"].includes(task.status));
   if (targets.some((task) => task.result && task.exportedRevision !== (task.revision ?? 0)) && !window.confirm("选中任务含未导出的结果。移除后自动保存记录中也会删除这些结果，确定移除？")) return;
   const removed = new Set(targets.map((task) => task.id));
+  for (const taskId of removed) resetSavedPages(taskId);
   tasks.value = tasks.value.filter((task) => !removed.has(task.id));
   checkedTaskIds.value = checkedTaskIds.value.filter((id) => !removed.has(id));
   if (!tasks.value.some((task) => task.id === selectedTaskId.value)) selectedTaskId.value = tasks.value[0]?.id ?? "";
+}
+
+function resetBatchIndices(): void {
+  const positions = new Map<string, number>();
+  for (const item of tasks.value) {
+    item.batchIndex = positions.get(item.batchId) ?? 0;
+    positions.set(item.batchId, item.batchIndex + 1);
+  }
+}
+
+function sortTasksNaturally(): void {
+  if (modelControlsBusy.value) return;
+  tasks.value.sort((left, right) => naturalPathCompare(left.path, right.path));
+  resetBatchIndices();
+  status.value = "已按文件名自然排序（例如第 2 页排在第 10 页之前）";
 }
 
 function selectAllTasks(): void {
@@ -426,11 +481,7 @@ function moveTask(task: OcrTask, direction: number): void {
   if (index < 0 || next < 0 || next >= tasks.value.length) return;
   tasks.value.splice(index, 1);
   tasks.value.splice(next, 0, task);
-  const positions = new Map<string, number>();
-  for (const item of tasks.value) {
-    item.batchIndex = positions.get(item.batchId) ?? 0;
-    positions.set(item.batchId, item.batchIndex + 1);
-  }
+  resetBatchIndices();
 }
 
 function retryTasks(selectedOnly = false): void {
@@ -445,11 +496,16 @@ function clearFinished(): void {
 
 function retryTask(task: OcrTask): void {
   if (task.status !== "failed" && task.status !== "cancelled") return;
+  const hasCheckpoint = Boolean(isPdfPath(task.path) && task.result?.pages.length
+    && task.result.pageCount < (task.result.selectedPageCount ?? task.result.totalPageCount));
   task.status = "queued";
   task.error = undefined;
-  task.currentPage = undefined;
-  task.totalPages = undefined;
-  status.value = `${task.fileName} 已重新加入队列；重试会从本次所选的第一页开始`;
+  task.currentPage = hasCheckpoint ? task.result?.pageCount : undefined;
+  task.totalPages = hasCheckpoint ? task.result?.selectedPageCount ?? task.result?.totalPageCount : undefined;
+  task.resumeEligible = hasCheckpoint;
+  status.value = task.resumeEligible
+    ? `${task.fileName} 已重新加入队列；文件和设置未变化时从已保存的下一页继续`
+    : `${task.fileName} 已重新加入队列；将从本次所选的第一页开始`;
 }
 
 async function startSidecar(): Promise<boolean> {
@@ -655,7 +711,7 @@ async function copyDiagnostics(): Promise<void> {
     }
   }
   const diagnostics: DiagnosticInfo = {
-    appVersion: "0.8.1",
+    appVersion: "0.9.0",
     sidecarRunning: ocrSidecar.running,
     sidecarStderr: ocrSidecar.stderr ? "运行日志已省略，以免复制文档路径或识别相关输出" : "",
     ...remote
@@ -711,7 +767,8 @@ function updateTaskStatus(task: OcrTask, event: SidecarEvent): void {
 
 async function runQueue(): Promise<void> {
   if (modelControlsBusy.value || !queuedCount.value) return;
-  if (tasks.value.some(task => task.status === "queued" && task.result) && !window.confirm("等待任务中已有识别结果（可能包含手动校对）。重新识别将替换这些结果，是否继续？")) return;
+  if (tasks.value.some(task => task.status === "queued" && task.result && !task.resumeEligible)
+    && !window.confirm("等待任务中已有识别结果（可能包含手动校对）。重新识别将替换这些结果，是否继续？")) return;
   queueStarting.value = true;
   try {
     if (!ocrSidecar.running && !(await startSidecar())) return;
@@ -723,9 +780,11 @@ async function runQueue(): Promise<void> {
     if (!queuedCount.value) { status.value = "等待任务的原文件均不可访问，请检查文件路径。"; return; }
     for (const task of tasks.value.filter(item => item.status === "queued" && isPdfPath(item.path))) {
       try {
-        const info = await ocrSidecar.request<{ totalPageCount: number; selectedPageCount: number }>("document_info", { path: task.path, pageRange: task.pageRange ?? "" });
+        const info = await ocrSidecar.request<{ totalPageCount: number; selectedPageCount: number; sourceSize: number; sourceMtimeNs: string }>("document_info", { path: task.path, pageRange: task.pageRange ?? "" });
         task.sourcePageCount = info.totalPageCount;
         task.totalPages = info.selectedPageCount;
+        task.sourceSize = info.sourceSize;
+        task.sourceMtimeNs = info.sourceMtimeNs;
       } catch (error) {
         task.status = "failed";
         task.error = error instanceof Error ? error.message : String(error);
@@ -754,39 +813,58 @@ async function runQueue(): Promise<void> {
       task.error = undefined;
       const previousResult = task.result;
       const previousTextEdited = task.textEdited;
-      task.result = undefined;
-      task.textEdited = false;
-      task.currentPage = 0;
+      const resume = isPdfPath(task.path) && task.resumeEligible === true && canResumeResult(previousResult, {
+        profile: modelProfile.value, mode: recognitionMode.value, threshold: scoreThreshold.value,
+        pageRange: task.pageRange ?? "", rotation: task.rotation ?? 0,
+        sourceSize: task.sourceSize, sourceMtimeNs: task.sourceMtimeNs
+      });
+      let liveResult = resume ? beginStreamingResult({
+        path: task.path, profile: modelProfile.value, mode: recognitionMode.value, threshold: scoreThreshold.value,
+        totalPageCount: task.sourcePageCount ?? previousResult?.totalPageCount ?? 0,
+        selectedPageCount: task.totalPages ?? previousResult?.selectedPageCount ?? 0,
+        pageRange: task.pageRange ?? "", rotation: task.rotation ?? 0,
+        sourceSize: task.sourceSize, sourceMtimeNs: task.sourceMtimeNs,
+        previous: previousResult, keepEditedText: previousTextEdited
+      }) : undefined;
+      task.result = liveResult;
+      if (task.result) liveResult = task.result;
+      task.textEdited = resume ? previousTextEdited : false;
+      task.currentPage = liveResult?.pages.length ?? 0;
       task.sourcePage = undefined;
       activeTaskId = task.id;
       skipRequestedTaskId = "";
-      const receivedPages: OcrPage[] = [];
+      let resetQueued = false;
+      const completedPages = liveResult?.pages.map((page) => Number(page.pageIndex)) ?? [];
       status.value = `正在识别 ${completedCount.value + 1}/${tasks.value.length}：${task.fileName}`;
+      if (resume) status.value += `（从 ${completedPages.length}/${task.totalPages ?? completedPages.length} 页继续）`;
 
       try {
         const result = await ocrSidecar.request<OcrResult>(
           "recognize",
-          { path: task.path, scoreThreshold: scoreThreshold.value, mode: recognitionMode.value, pageRange: task.pageRange ?? "", rotation: task.rotation ?? 0 },
+          { path: task.path, scoreThreshold: scoreThreshold.value, mode: recognitionMode.value,
+            pageRange: task.pageRange ?? "", rotation: task.rotation ?? 0, completedPages },
           (event) => {
             updateTaskStatus(task, event);
             if (event.pageResult) {
               const editor = selectedTaskId.value === task.id ? document.querySelector<HTMLTextAreaElement>(".result-body textarea") : null;
               const position = editor ? { start: editor.selectionStart, end: editor.selectionEnd, top: editor.scrollTop } : null;
-              receivedPages.push(event.pageResult);
-              const tables = recognitionMode.value === "table" ? mergeTablePages(receivedPages.map((page) => page.tables), receivedPages.map((page, index) => page.pageIndex ?? index)) : [];
-              const originalText = task.result?.text;
-              task.result = {
-                path: task.path, profile: modelProfile.value, resultType: recognitionMode.value,
-                cancelled: false, text: task.textEdited
-                  ? [originalText ?? "", event.pageResult.text].filter(Boolean).join("\n\n")
-                  : receivedPages.map((page) => page.text).join("\n\n"),
-                pageCount: receivedPages.length, totalPageCount: task.sourcePageCount ?? event.pageCount ?? receivedPages.length,
-                selectedPageCount: event.pageCount ?? receivedPages.length, pageRange: task.pageRange ?? "", rotation: task.rotation ?? 0,
-                blockCount: receivedPages.reduce((sum, page) => sum + page.blocks.length, 0),
-                tableCount: tables.length, rawTableCount: receivedPages.reduce((sum, page) => sum + page.tables.length, 0),
-                elapsedMs: event.elapsedMs ?? 0, pages: [...receivedPages], tables
-              };
-              task.revision = (task.revision ?? 0) + 1;
+              if (!liveResult) {
+                resetSavedPages(task.id);
+                resetQueued = true;
+                liveResult = beginStreamingResult({
+                  path: task.path, profile: modelProfile.value, mode: recognitionMode.value, threshold: scoreThreshold.value,
+                  totalPageCount: task.sourcePageCount ?? event.pageCount ?? 0,
+                  selectedPageCount: event.pageCount ?? 0, pageRange: task.pageRange ?? "", rotation: task.rotation ?? 0,
+                  sourceSize: task.sourceSize, sourceMtimeNs: task.sourceMtimeNs
+                });
+                task.result = liveResult;
+                liveResult = task.result;
+              }
+              if (appendResultPage(liveResult, event.pageResult, task.textEdited === true)) {
+                liveResult.elapsedMs = (resume ? previousResult?.elapsedMs ?? 0 : 0) + (event.elapsedMs ?? 0);
+                queuePageSave(task.id, event.pageResult);
+                task.revision = (task.revision ?? 0) + 1;
+              }
               if (editor && position) void nextTick(() => {
                 if (selectedTaskId.value !== task.id || !editor.isConnected) return;
                 editor.setSelectionRange(position.start, position.end);
@@ -796,20 +874,35 @@ async function runQueue(): Promise<void> {
           },
           null
         );
-        const liveResult = task.result as OcrResult | undefined;
-        if (task.textEdited && liveResult) result.text = liveResult.text;
-        task.result = result.pageCount === 0 && previousResult ? previousResult : result;
-        if (!result.pageCount && previousResult) task.textEdited = previousTextEdited;
-        task.revision = (task.revision ?? 0) + 1;
-        task.currentPage = result.pageCount;
-        task.totalPages = result.selectedPageCount ?? result.totalPageCount;
-        task.status = result.cancelled ? "cancelled" : "completed";
-        if (skipRequestedTaskId === task.id) task.error = "已跳过此文件；已完成页面的部分结果已保留";
-      } catch (error) {
-        if (!receivedPages.length && previousResult) {
+        if (liveResult) {
+          task.result = completeStreamingResult(liveResult, result.cancelled,
+            (resume ? previousResult?.elapsedMs ?? 0 : 0) + result.elapsedMs);
+          task.result.sourceSize = result.sourceSize ?? task.result.sourceSize;
+          task.result.sourceMtimeNs = result.sourceMtimeNs ?? task.result.sourceMtimeNs;
+        } else if (result.pageCount) {
+          resetSavedPages(task.id);
+          resetQueued = true;
+          task.result = finalizeResult(result, result.pages, false);
+          for (const page of task.result.pages) queuePageSave(task.id, page);
+        } else if (previousResult) {
           task.result = previousResult;
           task.textEdited = previousTextEdited;
+        } else task.result = finalizeResult(result, result.pages, false);
+        task.revision = (task.revision ?? 0) + 1;
+        task.currentPage = task.result.pageCount;
+        task.totalPages = result.selectedPageCount ?? result.totalPageCount;
+        task.status = result.cancelled ? "cancelled" : "completed";
+        task.resumeEligible = Boolean(result.cancelled && isPdfPath(task.path)
+          && task.result.pageCount < (task.result.selectedPageCount ?? task.result.totalPageCount));
+        if (skipRequestedTaskId === task.id) task.error = "已跳过此文件；已完成页面的部分结果已保留";
+      } catch (error) {
+        if (!liveResult?.pages.length && previousResult) {
+          task.result = previousResult;
+          task.textEdited = previousTextEdited;
+          if (resetQueued) for (const page of previousResult.pages) queuePageSave(task.id, page);
         }
+        task.resumeEligible = Boolean(isPdfPath(task.path) && task.result?.pages.length
+          && task.result.pageCount < (task.result.selectedPageCount ?? task.result.totalPageCount));
         task.status = stopRequested.value ? "cancelled" : "failed";
         task.error = error instanceof Error ? error.message : String(error);
         if (!ocrSidecar.running) {
@@ -1138,6 +1231,7 @@ function showError(error: unknown): void {
           <div v-if="tasks.length" class="queue-toolbar"><span>{{ queuedCount }} 等待 · {{ checkedTaskIds.length }} 勾选</span><button :disabled="queueRunning || exportBusy" @click="clearFinished">清理已结束</button></div>
           <div v-if="tasks.length" class="batch-actions">
             <button @click="selectAllTasks">全选 / 取消</button>
+            <button :disabled="modelControlsBusy" @click="sortTasksNaturally">自然排序</button>
             <button :disabled="!checkedTaskIds.length || exportBusy" @click="removeTasks(checkedTaskIds)">移除勾选</button>
             <button :disabled="!checkedTaskIds.length || queueRunning || exportBusy" @click="retryTasks(true)">重试勾选</button>
             <button :disabled="!failedCount || queueRunning || exportBusy" @click="retryTasks()">重试失败项</button>

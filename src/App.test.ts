@@ -55,10 +55,10 @@ beforeEach(() => {
   window.confirm = vi.fn(() => true);
   mock.request.mockImplementation(async (method, params, onEvent) => {
     if (method === "recognize") return new Promise((resolve, reject) => mock.jobs.push({ resolve, reject, onEvent }));
-    if (method === "validate_paths") return { items: params.items.map((item: { id: string }) => ({ id: item.id, exists: true })) };
+    if (method === "validate_paths") return { items: params.items.map((item: { id: string }) => ({ id: item.id, exists: true, sourceSize: 100, sourceMtimeNs: "200" })) };
     if (method === "ui_smoke_status") return { enabled: false };
     if (method === "model_status") return null;
-    if (method === "document_info") return { totalPageCount: 10, selectedPageCount: params.pageRange ? 3 : 10 };
+    if (method === "document_info") return { totalPageCount: 10, selectedPageCount: params.pageRange ? 3 : 10, sourceSize: 100, sourceMtimeNs: "200" };
     if (method === "cancel") { mock.jobs[mock.jobs.length - 1]?.resolve(result("部分结果", true)); return {}; }
     return {};
   });
@@ -86,15 +86,19 @@ describe("batch and recovery interactions", () => {
   it("rotates checked images without applying rotation to PDFs", async () => {
     wrapper = mount(App); await flushPromises();
     mock.dropped!(["/one.png", "/two.png", "/doc.pdf"]); await flushPromises();
+    await wrapper.findAll(".task-item").find((item) => item.text().includes("one.png"))!.trigger("click");
     await button("右转 90°").trigger("click");
     await button("全选 / 取消").trigger("click");
     await button("应用角度到勾选图片").trigger("click");
     expect(wrapper.findAll(".task-main").filter(item => item.text().includes("90°"))).toHaveLength(2);
     await button("开始批量").trigger("click"); await flushPromises();
-    expect(mock.request.mock.calls.find(call => call[0] === "recognize")?.[1].rotation).toBe(90);
+    expect(mock.request.mock.calls.filter(call => call[0] === "recognize")[0][1].rotation).toBe(0);
     mock.jobs[0].resolve(result("一")); await flushPromises();
     mock.jobs[1].resolve(result("二")); await flushPromises();
     mock.jobs[2].resolve(result("三")); await flushPromises();
+    const recognitionCalls = mock.request.mock.calls.filter(call => call[0] === "recognize");
+    expect(recognitionCalls.find(call => call[1].path === "/one.png")?.[1].rotation).toBe(90);
+    expect(recognitionCalls.find(call => call[1].path === "/doc.pdf")?.[1].rotation).toBe(0);
   });
 
   it("enables local-only preparation after model import", async () => {
@@ -225,5 +229,35 @@ describe("batch and recovery interactions", () => {
     await button("全选 / 取消").trigger("click");
     await button("移除勾选").trigger("click");
     expect(wrapper.findAll(".task-item")).toHaveLength(0);
+  });
+
+  it("sorts newly added files naturally and offers a queue re-sort", async () => {
+    wrapper = mount(App); await flushPromises();
+    mock.dropped!(["/scan/page10.png", "/scan/page2.png", "/scan/page1.png"]); await flushPromises();
+    expect(wrapper.findAll(".task-name").map((item) => item.text())).toEqual(["page1.png", "page2.png", "page10.png"]);
+    await wrapper.findAll(".task-item")[2].find('[aria-label="上移任务"]').trigger("click");
+    expect(wrapper.findAll(".task-name").map((item) => item.text())).toEqual(["page1.png", "page10.png", "page2.png"]);
+    await button("自然排序").trigger("click");
+    expect(wrapper.findAll(".task-name").map((item) => item.text())).toEqual(["page1.png", "page2.png", "page10.png"]);
+  });
+
+  it("continues an interrupted PDF from the next saved page", async () => {
+    wrapper = mount(App); await flushPromises();
+    mock.dropped!(["/document.pdf"]); await flushPromises();
+    await button("开始批量").trigger("click"); await flushPromises();
+    const first = { pageIndex: 0, text: "第一页", blocks: [], tables: [] };
+    mock.jobs[0].onEvent!({ event: "page_result", page: 1, pageCount: 10, elapsedMs: 5, pageResult: first });
+    mock.jobs[0].resolve({ ...result("第一页", true), path: "/document.pdf", pageCount: 1, totalPageCount: 10,
+      selectedPageCount: 10, completedPageCount: 1, scoreThreshold: .5, sourceSize: 100, sourceMtimeNs: "200", pages: [first] });
+    await flushPromises();
+    await wrapper.findAll(".task-actions button").find((item) => item.text() === "重试")!.trigger("click");
+    await button("开始批量").trigger("click"); await flushPromises();
+    const calls = mock.request.mock.calls.filter((call) => call[0] === "recognize");
+    expect(calls).toHaveLength(2);
+    expect(calls[1][1].completedPages).toEqual([0]);
+    expect(wrapper.find(".statusbar").text()).toContain("继续");
+    mock.jobs[1].resolve({ ...result("", false), path: "/document.pdf", pageCount: 0, totalPageCount: 10,
+      selectedPageCount: 10, completedPageCount: 1, elapsedMs: 1, pages: [] });
+    await flushPromises();
   });
 });

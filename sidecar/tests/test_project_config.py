@@ -79,11 +79,11 @@ class ProjectConfigTests(unittest.TestCase):
             ROOT / "compat" / "webkitgtk-4.0" / "src-tauri" / "Cargo.toml"
         ).read_text(encoding="utf-8")
 
-        self.assertEqual(package["version"], "0.8.1")
+        self.assertEqual(package["version"], "0.9.0")
         self.assertEqual(standard_config["version"], package["version"])
         self.assertEqual(legacy_config["package"]["version"], package["version"])
-        self.assertIn('version = "0.8.1"', standard_cargo)
-        self.assertIn('version = "0.8.1"', legacy_cargo)
+        self.assertIn('version = "0.9.0"', standard_cargo)
+        self.assertIn('version = "0.9.0"', legacy_cargo)
 
     def test_model_manager_uses_aligned_columns_and_one_deletion_flow(self) -> None:
         app = (ROOT / "src" / "App.vue").read_text(encoding="utf-8")
@@ -94,6 +94,18 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertIn("grid-template-columns: minmax(0, 1fr) 3.4em 4.8em", styles)
         self.assertIn('font-family: "Cascadia Mono", Consolas', styles)
         self.assertIn("删除当前模型缓存", app)
+
+    def test_incremental_checkpoints_and_natural_sort_are_release_wired(self) -> None:
+        app = (ROOT / "src" / "App.vue").read_text(encoding="utf-8")
+        session = (ROOT / "src" / "lib" / "session.ts").read_text(encoding="utf-8")
+        engine = (ROOT / "sidecar" / "engine.py").read_text(encoding="utf-8")
+        smoke = (ROOT / "scripts" / "smoke-model-transfer.py").read_text(encoding="utf-8")
+        self.assertIn('indexedDB.open("local-ocr-session", 2)', session)
+        self.assertIn('objectStore("pages"', session)
+        self.assertIn("completedPages", app)
+        self.assertIn("completed_pages", engine)
+        self.assertIn("resume-selected-pages", smoke)
+        self.assertIn("自然排序", app)
 
     def test_frontend_and_protocol_support_batch_and_table_results(self) -> None:
         app = (ROOT / "src" / "App.vue").read_text(encoding="utf-8")

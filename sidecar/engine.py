@@ -672,9 +672,10 @@ class OcrEngine:
         score_threshold: float = 0.5,
         mode: str = "text",
         progress: ProgressCallback | None = None,
-        on_page: Callable[[dict[str, Any], int, int], None] | None = None,
+        on_page: Callable[[dict[str, Any], int, int, int], None] | None = None,
         page_range: str = "",
         rotation: int = 0,
+        completed_pages: list[int] | None = None,
     ) -> dict[str, Any]:
         path = Path(path_value).expanduser().resolve(strict=True)
         if not path.is_file():
@@ -694,6 +695,17 @@ class OcrEngine:
         validate_rotation(rotation)
         selected = parse_page_range(page_range, total_page_count) if path.suffix.lower() == ".pdf" else [0]
         selected_count = len(selected)
+        completed_values = completed_pages or []
+        if any(type(index) is not int for index in completed_values) or len(set(completed_values)) != len(completed_values):
+            raise ValueError("已完成页检查点格式无效")
+        completed = set(completed_values)
+        if completed_values != selected[:len(completed_values)]:
+            raise ValueError("已完成页必须是本次所选页码中连续完成的前缀")
+        if completed and path.suffix.lower() != ".pdf":
+            raise ValueError("页级断点续识仅用于 PDF")
+        pending = [index for index in selected if index not in completed]
+        completed_before = len(completed)
+        source_stat = path.stat()
         if progress:
             if path.suffix.lower() == ".pdf":
                 prefix = "开始定位表格、识别文字并恢复结构" if mode == "table" else "开始识别"
@@ -704,7 +716,7 @@ class OcrEngine:
                     if mode == "table"
                     else "已封锁 Python 网络连接，开始读取本地图片……"
                 )
-            progress(message, 0, "status", selected_count)
+            progress(message, completed_before, "status", selected_count)
 
         with block_python_network(), contextlib.redirect_stdout(sys.stderr):
             predict_options: dict[str, Any] = {
@@ -727,15 +739,16 @@ class OcrEngine:
                         "use_table_orientation_classify": False,
                     }
                 )
-            with document_inputs(path, selected, rotation) as inputs:
+            with document_inputs(path, pending, rotation) as inputs:
                 iterator = iter(inputs)
-                for page_number in range(1, selected_count + 1):
-                    self._wait_if_paused(len(pages), selected_count, progress)
+                for page_number in range(1, len(pending) + 1):
+                    completed_count = completed_before + len(pages)
+                    self._wait_if_paused(completed_count, selected_count, progress)
                     if self._cancel_requested.is_set():
                         break
-                    source_index = selected[page_number - 1]
+                    source_index = pending[page_number - 1]
                     if progress:
-                        progress(f"正在识别原文第 {source_index + 1} 页 · 已完成 {len(pages)}/{selected_count} 页",
+                        progress(f"正在识别原文第 {source_index + 1} 页 · 已完成 {completed_count}/{selected_count} 页",
                                  source_index + 1, "source_page", selected_count)
                     source_index, pixels = next(iterator)
                     if self._cancel_requested.is_set():
@@ -757,11 +770,12 @@ class OcrEngine:
                         table["endPageIndex"] = source_index
                     pages.append(page)
                     if on_page:
-                        on_page(page, round((time.perf_counter() - started) * 1000), selected_count)
+                        on_page(page, round((time.perf_counter() - started) * 1000), selected_count, completed_before + len(pages))
                     if progress:
                         detail = f"，识别到 {len(page['tables'])} 个表格" if mode == "table" else ""
-                        progress(f"原文第 {source_index + 1} 页已完成 · {page_number}/{selected_count} 页（{round(page_number / selected_count * 100)}%）{detail}",
-                                 page_number, "progress", selected_count)
+                        completed_count = completed_before + len(pages)
+                        progress(f"原文第 {source_index + 1} 页已完成 · {completed_count}/{selected_count} 页（{round(completed_count / selected_count * 100)}%）{detail}",
+                                 completed_count, "progress", selected_count)
                     del pixels, result
 
         elapsed_ms = round((time.perf_counter() - started) * 1000)
@@ -773,10 +787,14 @@ class OcrEngine:
             "cancelled": self._cancel_requested.is_set(),
             "text": "\n\n".join(page["text"] for page in pages if page["text"]),
             "pageCount": len(pages),
+            "completedPageCount": completed_before + len(pages),
             "totalPageCount": total_page_count,
             "selectedPageCount": selected_count,
             "pageRange": page_range if path.suffix.lower() == ".pdf" else "",
             "rotation": rotation,
+            "scoreThreshold": score_threshold,
+            "sourceSize": source_stat.st_size,
+            "sourceMtimeNs": str(source_stat.st_mtime_ns),
             "blockCount": sum(len(page["blocks"]) for page in pages),
             "tableCount": len(tables),
             "rawTableCount": sum(len(page["tables"]) for page in pages),

@@ -49,6 +49,12 @@ export interface OcrResult {
   elapsedMs: number;
   pages: OcrPage[];
   tables: OcrTable[];
+  /** True while pages are still arriving; merged tables are finalized once. */
+  partial?: boolean;
+  completedPageCount?: number;
+  scoreThreshold?: number;
+  sourceSize?: number;
+  sourceMtimeNs?: string;
 }
 
 export interface SidecarEvent {
@@ -125,4 +131,8 @@ export interface OcrTask {
   rotation?: number;
   sourcePageCount?: number;
   sourcePage?: number;
+  /** An interrupted partial PDF may resume when its source/options still match. */
+  resumeEligible?: boolean;
+  sourceSize?: number;
+  sourceMtimeNs?: string;
 }
