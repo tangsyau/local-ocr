@@ -100,9 +100,14 @@ try {
           path:"/sample.png",fileName:"sample.png",status:"completed",resultType:"table",result}],
           settings:{profile:"fast",mode:"table",threshold:.5,merge:true,formats:["txt","xlsx"],exportGrouping:"separate",exportCollision:"rename"}};
         await new Promise((resolve,reject)=>{
-          const request=indexedDB.open("local-ocr-session",1);
+          // The database itself has already been opened at version 2 by the app.
+          // Store a schema-1 session record in that database to exercise the
+          // data migration without attempting an invalid IndexedDB downgrade.
+          const request=indexedDB.open("local-ocr-session",2);
           request.onsuccess=()=>{ const db=request.result; const tx=db.transaction("state","readwrite");
-            tx.objectStore("state").put(session,"session"); tx.oncomplete=()=>{db.close();resolve();};tx.onerror=reject;};request.onerror=reject;
+            tx.objectStore("state").put(session,"session"); tx.oncomplete=()=>{db.close();resolve();};
+            tx.onerror=()=>reject(tx.error||new Error("写入旧版布局测试会话失败"));};
+          request.onerror=()=>reject(request.error||new Error("打开布局测试数据库失败"));
         });
       });
       await page.reload();

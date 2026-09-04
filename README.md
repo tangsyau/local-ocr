@@ -4,7 +4,13 @@
 
 ## 当前功能
 
-当前版本为 **0.9.1：WebKitGTK 4.0 构建修复版**。完整保留 0.9.0 的长 PDF 增量保存、页级断点续识和自然排序；沿用 0.7.5 的正式图标，不改变 Paddle 模型或 Debian 10 / glibc 2.28 兼容基线。
+当前版本为 **0.9.2：Linux 布局测试修复版**。完整保留 0.9.0 的长 PDF 增量保存、页级断点续识和自然排序，以及 0.9.1 的依赖锁定修复；不改变 Paddle 模型或 Debian 10 / glibc 2.28 兼容基线。
+
+### 0.9.2 构建修复
+
+普通 Linux 布局测试不再试图把已经由应用打开到版本 2 的 IndexedDB 降级打开为版本 1。测试现在是在版本 2 数据库中写入 schema 1 格式的旧会话，再重载应用验证迁移到分离式逐页存储；同时将 IndexedDB 错误转换成可读的 `Error`，不再只输出 `page.evaluate: Event`。
+
+本次 Actions 日志已经确认 Windows NSIS 和 WebKitGTK 4.0 / glibc 2.28 AppImage 的构建、真实模型验证与安装包启动测试全部成功。0.9.2 仅修复普通 Linux 的布局测试脚本，不修改应用界面与 OCR 内核。
 
 ### 0.9.1 构建修复
 
@@ -208,8 +214,8 @@ npm run tauri build
 工作流也会在推送 `v*` 标签时自动运行，例如：
 
 ```bash
-git tag v0.9.1
-git push origin v0.9.1
+git tag v0.9.2
+git push origin v0.9.2
 ```
 
 构建产物作为 Actions Artifact 保存 14 天。当前产物没有代码签名，因此 Windows 首次运行可能显示 SmartScreen 警告。正式公开发布前还应修改 `src-tauri/tauri.conf.json` 中的 `com.example.localocr` 标识，并配置 Windows 代码签名。

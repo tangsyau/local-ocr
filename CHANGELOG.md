@@ -1,3 +1,10 @@
+# 0.9.2
+
+- 修复普通 Linux 布局检查：不再对已经升级到版本 2 的 `local-ocr-session` IndexedDB 执行版本 1 打开操作，避免浏览器抛出 `VersionError`。
+- 旧会话迁移测试改为在版本 2 数据库中写入 schema 1 会话内容，仍完整验证“内联逐页结果 → schema 2 独立页面存储”的真实升级路径。
+- IndexedDB 测试错误改为显式抛出请求或事务错误，避免 Playwright 只显示无法定位的 `page.evaluate: Event`。
+- 本次日志确认 0.9.1 的 Windows NSIS 与 WebKitGTK 4.0 / glibc 2.28 AppImage 已通过真实模型、打包、基线检查及安装包启动测试；本版不修改 OCR 或应用界面。
+
 # 0.9.1
 
 - 修复普通 Linux 与 WebKitGTK 4.0 两项 GitHub Actions 中相同的 npm Arborist `edgesOut` 内部错误，移除 `npm ci` 后的两处 `npm install --no-save`。
