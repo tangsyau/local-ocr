@@ -19,6 +19,10 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertEqual(workflow.count("scripts/smoke-desktop.py --bundle-dir"), 3)
         self.assertIn("npm run test:layout", workflow)
         self.assertIn("test-results/layout/*.png", workflow)
+        package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+        self.assertEqual(package["devDependencies"]["playwright"], "1.62.1")
+        self.assertIn("node_modules/.bin/playwright install --with-deps chromium", workflow)
+        self.assertNotIn("npm install --no-save --package-lock=false playwright", workflow)
 
     def test_sidecar_names_match_across_tauri_scope_and_frontend(self) -> None:
         tauri_config = json.loads(
@@ -78,12 +82,18 @@ class ProjectConfigTests(unittest.TestCase):
         legacy_cargo = (
             ROOT / "compat" / "webkitgtk-4.0" / "src-tauri" / "Cargo.toml"
         ).read_text(encoding="utf-8")
+        legacy_cli_package = json.loads(
+            (ROOT / "compat" / "webkitgtk-4.0" / "cli" / "package.json").read_text(
+                encoding="utf-8"
+            )
+        )
 
-        self.assertEqual(package["version"], "0.9.0")
+        self.assertEqual(package["version"], "0.9.1")
         self.assertEqual(standard_config["version"], package["version"])
         self.assertEqual(legacy_config["package"]["version"], package["version"])
-        self.assertIn('version = "0.9.0"', standard_cargo)
-        self.assertIn('version = "0.9.0"', legacy_cargo)
+        self.assertEqual(legacy_cli_package["version"], package["version"])
+        self.assertIn('version = "0.9.1"', standard_cargo)
+        self.assertIn('version = "0.9.1"', legacy_cargo)
 
     def test_model_manager_uses_aligned_columns_and_one_deletion_flow(self) -> None:
         app = (ROOT / "src" / "App.vue").read_text(encoding="utf-8")
@@ -243,6 +253,18 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertIn("--require-executable ocr-sidecar", legacy_job)
         self.assertIn("python -m pip --version", legacy_job)
         self.assertNotIn("cache: pip", legacy_job)
+        self.assertIn("npm ci --prefix compat/webkitgtk-4.0/cli", legacy_job)
+        self.assertIn("./cli/node_modules/.bin/tauri build", legacy_job)
+        self.assertNotIn("npm install --no-save --package-lock=false @tauri-apps/cli", legacy_job)
+        legacy_cli = json.loads(
+            (ROOT / "compat" / "webkitgtk-4.0" / "cli" / "package-lock.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(
+            legacy_cli["packages"]["node_modules/@tauri-apps/cli"]["version"],
+            "1.6.3",
+        )
         self.assertIn("VITE_WEBKITGTK_4_0=1", package["scripts"]["build:webkit4"])
         self.assertIn('"compat" / "webkitgtk-4.0"', stage_script)
 

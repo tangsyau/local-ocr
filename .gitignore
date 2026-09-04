@@ -14,3 +14,4 @@ src-tauri/binaries/ocr-sidecar-*
 compat/webkitgtk-4.0/src-tauri/target/
 compat/webkitgtk-4.0/src-tauri/binaries/ocr-sidecar-*
 !compat/webkitgtk-4.0/src-tauri/binaries/.gitkeep
+compat/webkitgtk-4.0/cli/node_modules/

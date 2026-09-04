@@ -1,3 +1,13 @@
+# 0.9.1
+
+- 修复普通 Linux 与 WebKitGTK 4.0 两项 GitHub Actions 中相同的 npm Arborist `edgesOut` 内部错误，移除 `npm ci` 后的两处 `npm install --no-save`。
+- Playwright 1.62.1 纳入根 `package.json` 和锁文件，布局测试直接调用已锁定的本地命令，不再临时修改根依赖树。
+- WebKitGTK 4.0 任务不再将 Tauri 1 CLI 临时加入已有 Tauri 2 的根依赖树。
+- 为 Tauri CLI 1.6.3 增加独立的 `package.json` 和锁文件；兼容任务使用独立目录执行 `npm ci`，随后从明确路径构建 AppImage。
+- Node 缓存键同时覆盖根前端锁文件与兼容 CLI 锁文件，并增加工作流回归检查，防止重新引入两个 Tauri CLI 主版本的依赖树冲突。
+- 根据本次日志确认 Windows 0.9.0 的源码测试、冻结 sidecar、真实模型验证、NSIS 构建及安装启动检查均成功；普通 Linux 与兼容 Linux 均在 OCR 检查之后的临时 npm 安装步骤失败，不是新的 OCR、glibc 或 WebKitGTK 运行错误。
+- 不修改 OCR、自动保存、断点续识或模型格式；继续使用 Debian 10、WebKitGTK 4.0 和 glibc 2.28 基线。
+
 # 0.9.0
 
 - 自动保存数据库升级为 schema 2：任务/设置摘要与逐页结果分开存储。新完成的一页只写入一个页记录，摘要不再重复保存整份 `pages` 和合并表格；schema 1 在首次保存时无损迁移。

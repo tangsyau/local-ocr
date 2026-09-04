@@ -4,7 +4,11 @@
 
 ## 当前功能
 
-当前版本为 **0.9.0：长 PDF 增量保存与页级断点续识**。保留 0.8.x 的指定页码、图片旋转、离线模型迁移和兼容性修复；沿用 0.7.5 的正式图标；没有新增快捷键，仅保留原有的专注模式 `Esc` 退出操作。
+当前版本为 **0.9.1：WebKitGTK 4.0 构建修复版**。完整保留 0.9.0 的长 PDF 增量保存、页级断点续识和自然排序；沿用 0.7.5 的正式图标，不改变 Paddle 模型或 Debian 10 / glibc 2.28 兼容基线。
+
+### 0.9.1 构建修复
+
+两项 Linux 任务都不再在 `npm ci` 后临时改写根依赖树：布局测试所需的 Playwright 1.62.1 纳入根锁文件；WebKitGTK 4.0 所需的 Tauri 1.6.3 则使用独立目录和独立锁文件。这样避开新版 npm 在 `npm install --no-save` 时触发的 `Cannot read properties of null (reading 'edgesOut')`。Windows 日志显示 0.9.0 的冻结 sidecar、模型、NSIS 和安装启动测试均已通过，本次不改动识别内核。
 
 ### 0.9.0 使用方法
 
@@ -204,8 +208,8 @@ npm run tauri build
 工作流也会在推送 `v*` 标签时自动运行，例如：
 
 ```bash
-git tag v0.9.0
-git push origin v0.9.0
+git tag v0.9.1
+git push origin v0.9.1
 ```
 
 构建产物作为 Actions Artifact 保存 14 天。当前产物没有代码签名，因此 Windows 首次运行可能显示 SmartScreen 警告。正式公开发布前还应修改 `src-tauri/tauri.conf.json` 中的 `com.example.localocr` 标识，并配置 Windows 代码签名。
@@ -274,8 +278,8 @@ AppImage 仍然受 Linux 内核、glibc、显卡驱动及桌面环境等因素�
 本地可选布局测试：
 
 ```bash
-npm install --no-save --package-lock=false playwright@1.62.1
-npx playwright install chromium
+npm ci
+node_modules/.bin/playwright install chromium
 npm run test:layout
 ```
 

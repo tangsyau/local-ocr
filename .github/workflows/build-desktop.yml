@@ -118,8 +118,7 @@ jobs:
         if: runner.os == 'Linux'
         timeout-minutes: 15
         run: |
-          npm install --no-save --package-lock=false playwright@1.62.1
-          npx playwright install --with-deps chromium
+          node_modules/.bin/playwright install --with-deps chromium
           npm run test:layout
 
       - name: Freeze Python sidecar
@@ -234,6 +233,9 @@ jobs:
         with:
           node-version: 22
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            compat/webkitgtk-4.0/cli/package-lock.json
 
       - name: Set up portable Python toolchain
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
@@ -318,7 +320,9 @@ jobs:
         run: npm run sidecar:stage-webkit4
 
       - name: Install Tauri 1 CLI
-        run: npm install --no-save --package-lock=false @tauri-apps/cli@1.6.3
+        run: |
+          npm ci --prefix compat/webkitgtk-4.0/cli
+          compat/webkitgtk-4.0/cli/node_modules/.bin/tauri --version
 
       - name: Free pip download cache
         if: steps.sidecar-webkit4-cache.outputs.cache-hit != 'true'
@@ -330,7 +334,7 @@ jobs:
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
           VITE_WEBKITGTK_4_0: "1"
-        run: ../../node_modules/.bin/tauri build --bundles appimage --ci
+        run: ./cli/node_modules/.bin/tauri build --bundles appimage --ci
 
       - name: Verify AppImage GLIBC 2.28 baseline
         shell: bash
