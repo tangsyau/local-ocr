@@ -741,7 +741,7 @@ async function copyDiagnostics(): Promise<void> {
     }
   }
   const diagnostics: DiagnosticInfo = {
-    appVersion: "0.11.0",
+    appVersion: "0.11.1",
     sidecarRunning: ocrSidecar.running,
     sidecarStderr: ocrSidecar.stderr ? "运行日志已省略，以免复制文档路径或识别相关输出" : "",
     ...remote
@@ -1387,7 +1387,7 @@ function showError(error: unknown): void {
                 <span class="page-range-label">识别页码</span>
                 <label class="page-range-radio"><input v-model="pageRangeMode" value="all" type="radio" name="page-range-mode" :disabled="modelControlsBusy" @change="applyPageRange()" />全部页</label>
                 <label class="page-range-radio"><input v-model="pageRangeMode" value="custom" type="radio" name="page-range-mode" :disabled="modelControlsBusy" />指定页码</label>
-                <input v-if="pageRangeMode === 'custom'" v-model="pageRangeDraft" aria-label="指定 PDF 页码" placeholder="例如 1,3-5,8" maxlength="2000" :disabled="modelControlsBusy" @change="applyPageRange()" />
+                <input v-model="pageRangeDraft" aria-label="指定 PDF 页码" placeholder="输入页码，例如 1,3-5,8" maxlength="2000" :disabled="modelControlsBusy" @focus="pageRangeMode = 'custom'" @input="pageRangeMode = 'custom'" @change="applyPageRange()" />
               </div>
               <div class="page-range-scope">
                 <span class="page-range-scope-label">页码设置应用范围</span>

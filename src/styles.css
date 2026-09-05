@@ -276,7 +276,7 @@ textarea { flex: 1 1 0; width: 100%; height: auto; min-height: 0; resize: none; 
 .text-settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr)); gap: var(--text-settings-gap); align-items: stretch; }
 .text-setting-field { min-width: 0; min-height: 70px; display: grid; grid-template-rows: 17px 36px; gap: 6px; padding: 8px 10px; border: 1px solid #e0e7e1; border-radius: 8px; background: #fff; }
 .text-setting-name { overflow: hidden; color: #627269; font-size: 11px; font-weight: 650; line-height: 17px; text-overflow: ellipsis; white-space: nowrap; }
-.text-setting-field select { width: 100%; height: 36px; min-width: 0; }
+.text-setting-field select { width: 100%; height: 36px; min-width: 0; font-size: 12px; }
 .text-setting-toggle { min-width: 0; min-height: 36px; display: flex; align-items: center; gap: 8px; color: #263c2f; font-size: 12px; line-height: 1.35; }
 .text-setting-toggle input { width: 16px; height: 16px; flex: 0 0 16px; margin: 0; accent-color: #397c55; }
 .text-settings .text-settings-help { margin: 9px 2px 0; color: #66746b; font-size: 11px; line-height: 1.55; }
