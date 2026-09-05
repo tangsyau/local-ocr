@@ -30,10 +30,10 @@ class ExportRulesTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             payload = sample_payload(directory)
             preview = preview_exports(payload)
-            self.assertEqual(preview["count"], 4)
+            self.assertEqual(preview["count"], 5)
             self.assertEqual(preview["noTableCount"], 1)
             result = export_results(payload)
-            self.assertEqual(result["count"], 4)
+            self.assertEqual(result["count"], 5)
             self.assertEqual(set(result["exportedIds"]), {"one", "two"})
             self.assertEqual({item["name"] for item in preview["files"]}, {item.name for item in Path(directory).iterdir()})
 
@@ -87,8 +87,8 @@ class ExportRulesTests(unittest.TestCase):
             payload = sample_payload(directory)
             payload["tableItems"] = []
             payload["formats"] = ["xlsx", "html"]
-            self.assertEqual(preview_exports(payload)["count"], 0)
-            self.assertEqual(export_results(payload)["count"], 0)
+            self.assertEqual(preview_exports(payload)["count"], 1)
+            self.assertEqual(export_results(payload)["count"], 1)
 
 
 class MaintenanceTests(unittest.TestCase):

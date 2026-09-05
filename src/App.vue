@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import TableResultViewer from "./components/TableResultViewer.vue";
 import ImagePreview from "./components/ImagePreview.vue";
+import { defaultTextSettings, normalizeTextSettings, projectText, type TextSettings } from "./lib/text-processing";
 import { ocrSidecar, SidecarRequestError } from "./lib/sidecar";
 import { displayTables, imageBatchTables, mergeTablePages, tableToTsv } from "./lib/table-results";
 import { naturalPathCompare, naturalSortPaths } from "./lib/file-order";
@@ -23,6 +24,12 @@ const recognitionMode = ref<RecognitionMode>("text");
 const preparedProfile = ref<ModelProfile | null>(null);
 const preparedMode = ref<RecognitionMode | null>(null);
 const resultView = ref<"text" | "tables">("text");
+const textSettings = ref<TextSettings>({ ...defaultTextSettings });
+const rawTextView = ref(false);
+const rubyPreview = ref(true);
+const textProjection = computed(() => selectedResult.value
+  ? projectText(selectedResult.value, textSettings.value, selectedTask.value?.textEdited, rawTextView.value)
+  : { text: "", html: "", raw: "", warnings: [] });
 const resultFocusMode = ref(false);
 const mergeCrossPageTables = ref(true);
 const exportTxt = ref(true);
@@ -39,6 +46,7 @@ const saveStatus = ref("正在读取上次任务……");
 const saveFailed = ref(false);
 const savePhase = ref<SavePhase>("loading");
 let sessionLoaded = false;
+let restoringSettings = false;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let saveChain: Promise<void> = Promise.resolve();
 let saveSequence = 0;
@@ -154,13 +162,18 @@ const selectedElapsedMs = computed(() => selectedUsesImageBatch.value
 const exportFormatSelected = computed(() => exportTxt.value || exportXlsx.value || exportHtml.value);
 const canExportSelectedFormats = computed(() => !queueRunning.value && !queueStarting.value && !setupBusy.value && !exportBusy.value && exportFormatSelected.value && (
   (exportTxt.value && exportableTasks.value.length > 0)
-  || ((exportXlsx.value || exportHtml.value) && tableTasks.value.length > 0)
+  || (exportHtml.value && exportableTasks.value.length > 0)
+  || (exportXlsx.value && tableTasks.value.length > 0)
 ));
 const exportEstimate = computed(() => {
   const textCount = exportableTasks.value.length;
   const tableCount = tableExportItems().length;
-  return (exportTxt.value ? (exportGrouping.value === "combined" ? Number(textCount > 0) : textCount) : 0)
-    + (Number(exportXlsx.value) + Number(exportHtml.value)) * (exportGrouping.value === "combined" ? Number(tableCount > 0) : tableCount);
+  if (exportGrouping.value === "combined") return Number(exportTxt.value && textCount > 0)
+    + Number(exportXlsx.value && tableCount > 0)
+    + Number(exportHtml.value && (tableCount > 0 || exportableTasks.value.some(t=>t.resultType === "text")));
+  return Number(exportTxt.value) * textCount
+    + (Number(exportXlsx.value) + Number(exportHtml.value)) * tableCount
+    + Number(exportHtml.value) * exportableTasks.value.filter(t=>t.resultType === "text").length;
 });
 
 const statusLabels: Record<OcrTaskStatus, string> = {
@@ -220,14 +233,20 @@ onBeforeUnmount(() => {
 });
 
 watch([tasks, selectedTaskId, scoreThreshold, modelProfile, recognitionMode, mergeCrossPageTables,
-  exportTxt, exportXlsx, exportHtml, exportGrouping, exportCollision, exportPrefix, exportSuffix, exportName, localModelsOnly], () => {
+  exportTxt, exportXlsx, exportHtml, exportGrouping, exportCollision, exportPrefix, exportSuffix, exportName, localModelsOnly, textSettings, rawTextView], () => {
   if (!sessionLoaded) return;
   if (saveTimer) clearTimeout(saveTimer);
   savePhase.value = "saving";
   saveTimer = setTimeout(() => { void flushSave().catch(() => {}); }, 400);
 }, { deep: true });
 
+watch([textSettings, rawTextView], () => {
+  if (restoringSettings) return;
+  for (const task of tasks.value) if (task.result) task.revision = (task.revision ?? 0) + 1;
+}, { deep: true });
+
 function applySettings(settings: AppSettings): void {
+  restoringSettings = true;
   modelProfile.value = settings.profile;
   recognitionMode.value = settings.mode;
   scoreThreshold.value = settings.threshold;
@@ -241,6 +260,9 @@ function applySettings(settings: AppSettings): void {
   exportSuffix.value = settings.exportSuffix;
   exportName.value = settings.exportName;
   localModelsOnly.value = settings.localModelsOnly === true;
+  textSettings.value = normalizeTextSettings(settings.textSettings);
+  rawTextView.value = settings.rawTextView === true;
+  void nextTick(() => { restoringSettings = false; });
 }
 
 function outputFormats(): string[] {
@@ -257,7 +279,8 @@ async function flushSave(): Promise<void> {
     schema: 2, savedAt: new Date().toISOString(), selectedTaskId: selectedTaskId.value, tasks: tasks.value,
     settings: { profile: modelProfile.value, mode: recognitionMode.value, threshold: scoreThreshold.value,
       merge: mergeCrossPageTables.value, formats: outputFormats(), exportGrouping: exportGrouping.value,
-      exportCollision: exportCollision.value, exportPrefix: exportPrefix.value, exportSuffix: exportSuffix.value, exportName: exportName.value, localModelsOnly: localModelsOnly.value }
+      exportCollision: exportCollision.value, exportPrefix: exportPrefix.value, exportSuffix: exportSuffix.value, exportName: exportName.value, localModelsOnly: localModelsOnly.value,
+      textSettings: { ...textSettings.value }, rawTextView: rawTextView.value }
   });
   const pages = [...pendingPageSaves.values()];
   const resets = [...pendingPageResets];
@@ -711,7 +734,7 @@ async function copyDiagnostics(): Promise<void> {
     }
   }
   const diagnostics: DiagnosticInfo = {
-    appVersion: "0.9.2",
+    appVersion: "0.10.0",
     sidecarRunning: ocrSidecar.running,
     sidecarStderr: ocrSidecar.stderr ? "运行日志已省略，以免复制文档路径或识别相关输出" : "",
     ...remote
@@ -816,7 +839,8 @@ async function runQueue(): Promise<void> {
       const resume = isPdfPath(task.path) && task.resumeEligible === true && canResumeResult(previousResult, {
         profile: modelProfile.value, mode: recognitionMode.value, threshold: scoreThreshold.value,
         pageRange: task.pageRange ?? "", rotation: task.rotation ?? 0,
-        sourceSize: task.sourceSize, sourceMtimeNs: task.sourceMtimeNs
+        sourceSize: task.sourceSize, sourceMtimeNs: task.sourceMtimeNs,
+        pdfSource: textSettings.value.pdfSource, rubyEnabled: textSettings.value.rubyEnabled
       });
       let liveResult = resume ? beginStreamingResult({
         path: task.path, profile: modelProfile.value, mode: recognitionMode.value, threshold: scoreThreshold.value,
@@ -824,7 +848,8 @@ async function runQueue(): Promise<void> {
         selectedPageCount: task.totalPages ?? previousResult?.selectedPageCount ?? 0,
         pageRange: task.pageRange ?? "", rotation: task.rotation ?? 0,
         sourceSize: task.sourceSize, sourceMtimeNs: task.sourceMtimeNs,
-        previous: previousResult, keepEditedText: previousTextEdited
+        previous: previousResult, keepEditedText: previousTextEdited,
+        pdfSource: textSettings.value.pdfSource, rubyEnabled: textSettings.value.rubyEnabled
       }) : undefined;
       task.result = liveResult;
       if (task.result) liveResult = task.result;
@@ -842,7 +867,8 @@ async function runQueue(): Promise<void> {
         const result = await ocrSidecar.request<OcrResult>(
           "recognize",
           { path: task.path, scoreThreshold: scoreThreshold.value, mode: recognitionMode.value,
-            pageRange: task.pageRange ?? "", rotation: task.rotation ?? 0, completedPages },
+            pageRange: task.pageRange ?? "", rotation: task.rotation ?? 0, completedPages,
+            pdfSource: textSettings.value.pdfSource, rubyEnabled: textSettings.value.rubyEnabled },
           (event) => {
             updateTaskStatus(task, event);
             if (event.pageResult) {
@@ -855,7 +881,8 @@ async function runQueue(): Promise<void> {
                   path: task.path, profile: modelProfile.value, mode: recognitionMode.value, threshold: scoreThreshold.value,
                   totalPageCount: task.sourcePageCount ?? event.pageCount ?? 0,
                   selectedPageCount: event.pageCount ?? 0, pageRange: task.pageRange ?? "", rotation: task.rotation ?? 0,
-                  sourceSize: task.sourceSize, sourceMtimeNs: task.sourceMtimeNs
+                  sourceSize: task.sourceSize, sourceMtimeNs: task.sourceMtimeNs,
+                  pdfSource: textSettings.value.pdfSource, rubyEnabled: textSettings.value.rubyEnabled
                 });
                 task.result = liveResult;
                 liveResult = task.result;
@@ -874,6 +901,8 @@ async function runQueue(): Promise<void> {
           },
           null
         );
+        status.value = `${task.fileName}：正在整理文本……`;
+        await nextTick();
         if (liveResult) {
           task.result = completeStreamingResult(liveResult, result.cancelled,
             (resume ? previousResult?.elapsedMs ?? 0 : 0) + result.elapsedMs);
@@ -1059,17 +1088,20 @@ async function exportSelectedFormats(): Promise<void> {
     const revisions = new Map(exportableTasks.value.map((task) => [task.id, task.revision ?? 0]));
     const payload = JSON.parse(JSON.stringify({
       directory, formats: outputFormats(),
-      textItems: exportableTasks.value.map((task) => ({ id: task.id, fileName: task.fileName, text: task.result?.text ?? "",
-        profile: task.result?.profile, mode: task.resultType })),
+      textItems: exportableTasks.value.map((task) => {
+        const output = projectText(task.result!, textSettings.value, task.textEdited, rawTextView.value);
+        return { id: task.id, fileName: task.fileName, text: output.text, html: output.html,
+          profile: task.result?.profile, mode: task.resultType };
+      }),
       tableItems: tableExportItems(),
       options: { grouping: exportGrouping.value, collision: exportCollision.value,
         prefix: exportPrefix.value, suffix: exportSuffix.value, name: exportName.value }
     }));
     const preview = await ocrSidecar.request<{ count: number; skipped: number; overwrites: number; noTableCount: number;
       files: Array<{ name: string; action: string }> }>("export_preview", payload);
-    if (!preview.count) { status.value = `没有需要写入的文件（同名跳过 ${preview.skipped} 个）；未识别到表格的任务不会生成 XLSX/HTML。`; return; }
+    if (!preview.count) { status.value = `没有需要写入的文件（同名跳过 ${preview.skipped} 个）；未识别到表格的任务不会生成 XLSX。`; return; }
     const filenames = preview.files.filter((file) => file.action !== "skip").slice(0, 12).map((file) => file.name).join("\n");
-    if (!window.confirm(`将生成 ${preview.count} 个文件，覆盖 ${preview.overwrites} 个，跳过 ${preview.skipped} 个。\n${preview.noTableCount} 个任务没有表格，不会生成 XLSX/HTML。\n\n${filenames}${preview.count > 12 ? "\n……" : ""}\n\n是否导出？`)) return;
+    if (!window.confirm(`将生成 ${preview.count} 个文件，覆盖 ${preview.overwrites} 个，跳过 ${preview.skipped} 个。\n${preview.noTableCount} 个任务没有表格，不会生成 XLSX；文字模式支持 HTML。\n\n${filenames}${preview.count > 12 ? "\n……" : ""}\n\n是否导出？`)) return;
     const response = await ocrSidecar.request<{ count: number; skipped: number; exportedIds: string[] }>(
       "export_results", payload, undefined, null
     );
@@ -1094,8 +1126,8 @@ async function copyCurrentResult(): Promise<void> {
     status.value = `已复制 ${selectedTables.value.length} 个表格的制表符文本，可直接粘贴到 Excel`;
     return;
   }
-  if (!selectedResult.value.text) return;
-  await navigator.clipboard.writeText(selectedResult.value.text);
+  if (!textProjection.value.text) return;
+  await navigator.clipboard.writeText(textProjection.value.text);
   status.value = `${fileName.value} 的识别文本已复制到剪贴板`;
 }
 
@@ -1105,6 +1137,14 @@ function updateSelectedText(event: Event): void {
     selectedTask.value.textEdited = true;
     selectedTask.value.revision = (selectedTask.value.revision ?? 0) + 1;
   }
+}
+
+function discardTextEdits(): void {
+  const task = selectedTask.value;
+  if (!task?.result || !window.confirm("放弃当前手工校对内容，恢复由原始识别数据生成的文本？")) return;
+  task.textEdited = false;
+  task.result.text = task.result.pages.map(p=>p.text).join("\n\n");
+  task.revision = (task.revision ?? 0) + 1;
 }
 
 function showError(error: unknown): void {
@@ -1292,7 +1332,7 @@ function showError(error: unknown): void {
             <label v-if="exportGrouping === 'combined'">合并文件名<input v-model="exportName" :disabled="exportBusy" maxlength="100" /></label>
             <label>文件名前缀<input v-model="exportPrefix" :disabled="exportBusy" placeholder="例如 {date}_" maxlength="100" /></label>
             <label>文件名后缀<input v-model="exportSuffix" :disabled="exportBusy" placeholder="例如 _{profile}_{mode}" maxlength="100" /></label>
-            <p>支持 {date} 日期、{profile} 档位、{mode} 模式。未识别到表格的任务不生成 XLSX/HTML。</p>
+            <p>支持 {date} 日期、{profile} 档位、{mode} 模式。无表格不生成 XLSX；文字模式可导出 HTML。</p>
           </details>
           <button class="secondary-button export-button" :disabled="!canExportSelectedFormats" @click="exportSelectedFormats">{{ exportBusy ? "正在导出……" : `导出所选格式（${exportEstimate}）` }}</button>
           <p v-if="!exportFormatSelected" class="export-hint">请至少选择一种格式。</p>
@@ -1304,6 +1344,17 @@ function showError(error: unknown): void {
         <article class="panel preview-panel">
           <div class="panel-title"><span>文档预览</span><small>{{ fileName || "尚未选择任务" }}</small></div>
           <div class="preview-content">
+          <details class="text-settings">
+            <summary>文档设置 · 文字来源、注音与文本整理</summary>
+            <div class="text-settings-grid">
+              <label>PDF 文字来源<select v-model="textSettings.pdfSource" :disabled="modelControlsBusy" aria-label="PDF 文字来源"><option value="auto">自动（优先提取文本层）</option><option value="ocr">强制 OCR</option></select></label>
+              <label>文本整理<select v-model="textSettings.textMode" :disabled="queueRunning || exportBusy" aria-label="文本整理"><option value="original">保留原始断行</option><option value="smart">智能整理</option><option value="continuous">合并为连续文本</option></select></label>
+              <label><input v-model="textSettings.crossPageText" type="checkbox" :disabled="queueRunning || exportBusy" />合并跨页正文（仅相邻完整页面）</label>
+              <label><input v-model="textSettings.rubyEnabled" type="checkbox" :disabled="modelControlsBusy" aria-label="识别日语注音" />识别日语注音（横排 / 竖排）</label>
+              <label>注音输出<select v-model="textSettings.rubyFormat" :disabled="queueRunning || exportBusy" aria-label="注音输出"><option value="ignore">忽略注音</option><option value="parentheses">括号保留</option><option value="ruby">Ruby 小字（HTML）</option></select></label>
+            </div>
+            <p>来源和注音识别设置在下次识别生效；整理与注音格式无需重识别。文字模式适用，表格保持原流程。自动判断不能发现所有文本层错误，内容异常时请选择强制 OCR。</p>
+          </details>
           <div v-if="selectedTask" class="document-controls">
             <template v-if="isPdf">
               <div class="document-control-row">
@@ -1368,13 +1419,21 @@ function showError(error: unknown): void {
             </div>
           </div>
           <div v-if="selectedResult" class="result-body">
+            <div v-if="resultView === 'text'" class="text-result-tools">
+              <label>显示<select v-model="rawTextView" aria-label="原始或整理后文本" :disabled="exportBusy || queueRunning"><option :value="false">整理后 / 校对版</option><option :value="true">原始结果（只读）</option></select></label>
+              <label v-if="textSettings.rubyFormat === 'ruby' && !rawTextView && !selectedTask?.textEdited"><input v-model="rubyPreview" type="checkbox" />显示 Ruby 小字（取消可校对）</label>
+              <button v-if="selectedTask?.textEdited" :disabled="queueRunning || exportBusy" @click="discardTextEdits">恢复自动整理版</button>
+              <small v-for="message in textProjection.warnings" :key="message">{{ message }}</small>
+              <small v-if="selectedResult.pages.some(p=>p.source === 'pdf-text')">部分或全部页面直接取自 PDF 文本层，未进行 OCR。</small>
+            </div>
             <div class="metrics">
               <div><b>{{ selectedPageCount }} / {{ selectedTotalPageCount }}</b><span>{{ selectedUsesImageBatch ? "同批图片完成 / 总数" : selectedResult.pageRange ? "已完成 / 所选页数" : "已完成 / 总页数" }}</span></div>
               <div><b>{{ selectedBlockCount }}</b><span>文本块</span></div>
               <div><b>{{ selectedTables.length }}</b><span>{{ mergeCrossPageTables && selectedRawTableCount > selectedMergedTableCount ? `跨页合并（原 ${selectedRawTableCount}）` : "表格" }}</span></div>
               <div><b>{{ (selectedElapsedMs / 1000).toFixed(2) }}s</b><span>用时</span></div>
             </div>
-            <textarea v-if="resultView === 'text'" :value="selectedResult.text" :readonly="exportBusy" spellcheck="false" aria-label="识别文本" @input="updateSelectedText"></textarea>
+            <div v-if="resultView === 'text' && textSettings.rubyFormat === 'ruby' && rubyPreview && !rawTextView && !selectedTask?.textEdited" class="ruby-text-preview" aria-label="Ruby 文本预览" v-html="textProjection.html"></div>
+            <textarea v-else-if="resultView === 'text'" :value="textProjection.text" :readonly="exportBusy || rawTextView" spellcheck="false" aria-label="识别文本" @input="updateSelectedText"></textarea>
             <TableResultViewer v-else :tables="selectedTables" :view-key="`${selectedTaskId}:${mergeCrossPageTables}`" />
           </div>
           <div v-else-if="selectedTask?.error" class="empty-state result-empty error-state"><p>{{ selectedTask.error }}</p></div>

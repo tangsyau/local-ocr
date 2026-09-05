@@ -20,6 +20,7 @@ def initialize_document_runtime() -> None:
     import numpy  # noqa: F401
     from PIL import Image, ImageOps  # noqa: F401
     import pypdfium2  # noqa: F401
+    import cv2  # noqa: F401
 
     Image.init()
 
@@ -78,7 +79,7 @@ def load_image(path: Path, rotation: int = 0) -> Any:
 
 
 @contextlib.contextmanager
-def document_inputs(path: Path, selected: list[int], rotation: int = 0) -> Iterator[Iterator[tuple[int, Any]]]:
+def document_inputs(path: Path, selected: list[int], rotation: int = 0, *, pdf_source: str = "ocr", ruby: bool = False) -> Iterator[Iterator[tuple[int, Any]]]:
     if path.suffix.lower() != ".pdf":
         # Match PDF's lazy reader: emit the source-page event and check cancel
         # before any potentially expensive image decoding starts.
@@ -97,10 +98,19 @@ def document_inputs(path: Path, selected: list[int], rotation: int = 0) -> Itera
             for index in selected:
                 page = document[index]
                 try:
+                    if pdf_source == "auto":
+                        from pdf_text import extract_pdf_page
+                        try:
+                            extracted = extract_pdf_page(page, index, ruby)
+                        except (ValueError, RuntimeError):
+                            extracted = None
+                        if extracted is not None:
+                            yield index, extracted
+                            continue
                     # Same 2x scale as the former PaddleX PDF reader. Bound huge
                     # engineering sheets to avoid unbounded bitmap allocation.
                     width, height = page.get_size()
-                    scale = min(2.0, (24_000_000 / max(width * height, 1)) ** 0.5, 8192 / max(width, height, 1))
+                    scale = min(4.2 if ruby else 2.0, (24_000_000 / max(width * height, 1)) ** 0.5, 8192 / max(width, height, 1))
                     bitmap = page.render(scale=scale)
                     try:
                         with bitmap.to_pil().convert("RGB") as image:

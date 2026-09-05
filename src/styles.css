@@ -254,3 +254,14 @@ textarea { flex: 1 1 0; width: 100%; height: auto; min-height: 0; resize: none; 
   .settings-card label { margin-bottom: 5px; }
   .sidebar > .step-card:last-child { border-bottom: 0; margin-bottom: 0; padding-bottom: 0; }
 }
+:root { --text-settings-gap: 10px; }
+.text-settings { flex: 0 0 auto; padding: 10px 14px; border-bottom: 1px solid #dde4df; }
+.text-settings p { color: #66746b; font-size: 12px; line-height: 1.6; }
+.text-settings summary { cursor: pointer; font-size: 13px; color: #466952; }
+.text-settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: var(--text-settings-gap); padding-top: 12px; }
+.text-settings-grid label { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 13px; }
+.text-settings select, .text-result-tools select { max-width: 100%; font: inherit; padding: 5px; border: 1px solid #cbd5cd; border-radius: 5px; background: #fff; color: #283c30; }
+.text-result-tools { display: flex; flex-wrap: wrap; flex: 0 0 auto; gap: 7px 12px; padding: 10px 16px; align-items: center; font-size: 12px; border-bottom: 1px solid #dde4df; max-height: 180px; overflow: auto; }
+.text-result-tools small { flex-basis: 100%; color: #66746b; }
+.ruby-text-preview { flex: 1 1 0; min-height: 0; min-width: 0; overflow: auto; padding: 20px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 16px; line-height: 2.1; }
+.ruby-text-preview rt { font-size: .6em; }

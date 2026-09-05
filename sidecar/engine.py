@@ -18,6 +18,7 @@ from typing import Any, Callable
 
 from network_guard import block_python_network
 from document_input import document_inputs, initialize_document_runtime, parse_page_range, validate_rotation
+from text_layout import normalize_page, ruby_regions
 
 
 ProgressCallback = Callable[[str, int | None, str, int | None], None]
@@ -676,6 +677,8 @@ class OcrEngine:
         page_range: str = "",
         rotation: int = 0,
         completed_pages: list[int] | None = None,
+        pdf_source: str = "ocr",
+        ruby_enabled: bool = False,
     ) -> dict[str, Any]:
         path = Path(path_value).expanduser().resolve(strict=True)
         if not path.is_file():
@@ -684,6 +687,8 @@ class OcrEngine:
             raise ValueError(f"不支持的文件类型：{path.suffix}")
         if not 0.0 <= score_threshold <= 1.0:
             raise ValueError("最低置信度必须在 0 到 1 之间")
+        if pdf_source not in {"auto", "ocr"} or type(ruby_enabled) is not bool:
+            raise ValueError("PDF 文字来源或注音设置无效")
         if self._ocr is None:
             raise RuntimeError("模型尚未准备，请先执行 prepare")
         if mode != self._mode:
@@ -739,7 +744,9 @@ class OcrEngine:
                         "use_table_orientation_classify": False,
                     }
                 )
-            with document_inputs(path, pending, rotation) as inputs:
+            input_options = {"pdf_source": pdf_source if mode == "text" else "ocr", "ruby": ruby_enabled and mode == "text"}
+            # Keep old readers/mock integrations usable when new options are off.
+            with document_inputs(path, pending, rotation, **(input_options if pdf_source != "ocr" or ruby_enabled else {})) as inputs:
                 iterator = iter(inputs)
                 for page_number in range(1, len(pending) + 1):
                     completed_count = completed_before + len(pages)
@@ -755,15 +762,49 @@ class OcrEngine:
                         break
                     # One array is exactly one physical page, so no skipped page
                     # is sent to OCR and predictor-local page indices are ignored.
-                    results = self._ocr.predict_iter(input=pixels, **predict_options)
-                    try:
-                        result = next(iter(results))
-                        page = extract_table_page(result) if mode == "table" else extract_page(result)
-                    except StopIteration as error:
-                        raise RuntimeError(f"原文第 {source_index + 1} 页未返回识别结果") from error
-                    finally:
-                        if hasattr(results, "close"):
-                            results.close()
+                    result = None
+                    if isinstance(pixels, dict) and pixels.get("source") == "pdf-text":
+                        page = pixels
+                        if progress:
+                            progress(f"原文第 {source_index + 1} 页：已直接提取 PDF 文本，无需 OCR", source_index + 1, "source_page", selected_count)
+                    else:
+                        def predict(image):
+                            results = self._ocr.predict_iter(input=image, **predict_options)
+                            try:
+                                raw_result = next(iter(results))
+                                return extract_table_page(raw_result) if mode == "table" else extract_page(raw_result)
+                            except StopIteration as error:
+                                raise RuntimeError(f"原文第 {source_index + 1} 页未返回识别结果") from error
+                            finally:
+                                if hasattr(results, "close"):
+                                    results.close()
+                        regions = ruby_regions(pixels) if ruby_enabled and mode == "text" and hasattr(pixels, "shape") else []
+                        cleaned = pixels.copy() if regions else pixels
+                        for x1, y1, x2, y2 in regions:
+                            cleaned[max(0,y1-1):y2+1, max(0,x1-1):x2+1] = 255
+                        page = predict(cleaned)
+                        del cleaned
+                        for ordinal, (x1, y1, x2, y2) in enumerate(regions):
+                            self._wait_if_paused(completed_before + len(pages), selected_count, progress)
+                            if self._cancel_requested.is_set():
+                                break
+                            if progress and ordinal % 10 == 0:
+                                progress(f"正在读取第 {source_index + 1} 页注音 {ordinal+1}/{len(regions)}", source_index+1, "source_page", selected_count)
+                            import cv2
+                            crop = pixels[max(0,y1-2):y2+2, max(0,x1-2):x2+2]
+                            crop = cv2.resize(crop, None, fx=3, fy=3)
+                            crop = cv2.copyMakeBorder(crop, 12, 12, 12, 12, cv2.BORDER_CONSTANT, value=(255,255,255))
+                            reading = predict(crop)
+                            text = "".join(b["text"] for b in reading["blocks"])
+                            if text:
+                                page["blocks"].append({"text": text, "box": [x1,y1,x2,y2], "polygon": [],
+                                                       "score": min((b["score"] for b in reading["blocks"]), default=0),
+                                                       "rubyCandidate": True})
+                        if self._cancel_requested.is_set():
+                            break  # An unfinished ruby page must not become a checkpoint.
+                        if hasattr(pixels, "shape"):
+                            page["text"] = "\n".join(b["text"] for b in page["blocks"])
+                            normalize_page(page, pixels.shape[1], pixels.shape[0], "ocr", ruby_enabled and mode == "text")
                     page["pageIndex"] = source_index
                     for table in page["tables"]:
                         table["pageIndex"] = source_index
@@ -793,6 +834,8 @@ class OcrEngine:
             "pageRange": page_range if path.suffix.lower() == ".pdf" else "",
             "rotation": rotation,
             "scoreThreshold": score_threshold,
+            "pdfSource": pdf_source,
+            "rubyEnabled": ruby_enabled,
             "sourceSize": source_stat.st_size,
             "sourceMtimeNs": str(source_stat.st_mtime_ns),
             "blockCount": sum(len(page["blocks"]) for page in pages),

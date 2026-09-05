@@ -1,8 +1,14 @@
 export interface OcrBlock {
   text: string;
-  score: number;
+  score: number | null;
   polygon: number[][];
   box: number[];
+  id?: string;
+  direction?: "horizontal" | "vertical";
+  fontSize?: number;
+  source?: "pdf-text" | "ocr";
+  role?: "body" | "ruby" | "ruby-unmatched";
+  ruby?: Array<{ start: number; end: number; text: string; alignment?: string }>;
 }
 
 export interface OcrTableCell {
@@ -30,6 +36,12 @@ export interface OcrPage {
   text: string;
   blocks: OcrBlock[];
   tables: OcrTable[];
+  schemaVersion?: number;
+  rawText?: string;
+  width?: number;
+  height?: number;
+  source?: "pdf-text" | "ocr";
+  rubyEnabled?: boolean;
 }
 
 export interface OcrResult {
@@ -55,6 +67,8 @@ export interface OcrResult {
   scoreThreshold?: number;
   sourceSize?: number;
   sourceMtimeNs?: string;
+  pdfSource?: "auto" | "ocr";
+  rubyEnabled?: boolean;
 }
 
 export interface SidecarEvent {

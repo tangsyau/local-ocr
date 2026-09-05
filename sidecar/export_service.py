@@ -7,10 +7,47 @@ import os
 import re
 import shutil
 import tempfile
+import html
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
-from engine import export_table_results, export_text_results
+from engine import export_table_results, export_text_results, safe_table_html
+
+
+class RubySanitizer(HTMLParser):
+    """Accept only our generated ruby/rt markup, never scripts/attributes/URLs."""
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts = []
+        self.stack = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in {"ruby", "rt", "table", "tbody", "tr", "td", "th", "caption"}:
+            spans = "".join(f' {key}="{int(value)}"' for key, value in attrs
+                if tag in {"td", "th"} and key in {"rowspan", "colspan"} and value and value.isdigit() and 0 < int(value) <= 10000)
+            self.parts.append(f"<{tag}{spans}>")
+            self.stack.append(tag)
+
+    def handle_endtag(self, tag):
+        if self.stack and self.stack[-1] == tag:
+            self.parts.append(f"</{self.stack.pop()}>")
+
+    def handle_data(self, value):
+        self.parts.append(html.escape(value))
+
+
+def text_html(value: str) -> str:
+    parser = RubySanitizer()
+    parser.feed(value)
+    parser.close()
+    content = "".join(parser.parts) + "".join(f"</{tag}>" for tag in reversed(parser.stack))
+    return ('<!doctype html><html lang="zh"><meta charset="utf-8">'
+            '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'">'
+            '<meta name="viewport" content="width=device-width,initial-scale=1">'
+            '<title>本地 OCR 文字结果</title><style>body{max-width:60em;margin:2em auto;padding:1em;'
+            'font-family:system-ui,sans-serif}main{white-space:pre-wrap;overflow-wrap:anywhere;line-height:2.1}'
+            'rt{font-size:.6em}table{border-collapse:collapse;white-space:normal}td,th{border:1px solid #aaa;padding:.4em}</style><main>' + content + '</main></html>')
 
 
 def safe_name(value: str) -> str:
@@ -40,6 +77,8 @@ def _documents(payload: dict[str, Any]) -> list[dict[str, Any]]:
     if not formats or set(formats) - {"txt", "xlsx", "html"}:
         raise ValueError("请选择 TXT、XLSX、HTML 中的至少一种格式")
     texts = list(payload.get("textItems") or [])
+    html_texts = [item for item in texts if item.get("mode") == "text"]
+    html_documents = None
     tables = [item for item in payload.get("tableItems") or [] if item.get("tables")]
     if options.get("grouping", "separate") not in {"separate", "combined"}:
         raise ValueError("未知导出分组方式")
@@ -52,19 +91,31 @@ def _documents(payload: dict[str, Any]) -> list[dict[str, Any]]:
         if texts:
             texts = [{**common, "ids": [item["id"] for item in texts],
                       "text": "\n\n".join(f"—— {item.get('fileName', '')} ——\n{item.get('text', '')}" for item in texts)}]
+        if html_texts:
+            html_texts = [{**common, "mode": "text", "ids": [item["id"] for item in html_texts],
+                "html": "\n\n".join(html.escape(str(item.get("fileName", ""))) + "\n" +
+                    str(item.get("html", html.escape(str(item.get("text", ""))))) for item in html_texts)}]
         if tables:
             joined = []
             for item in tables:
                 for table in item["tables"]:
                     joined.append({**copy.deepcopy(table), "sourceName": item.get("fileName", "")})
             tables = [{**common, "ids": [task_id for item in tables for task_id in item.get("ids", [])], "tables": joined}]
+        if html_texts or tables:
+            html_documents = [{**common, "mode": "text", "combinedHtml": True,
+                "ids": [task_id for item in html_texts + tables for task_id in item.get("ids", [])],
+                "html": "\n\n".join([str(item["html"]) for item in html_texts] +
+                    [html.escape(str(table.get("sourceName", ""))) + "\n" + safe_table_html(table["rows"])
+                     for item in tables for table in item["tables"]])}]
     documents = []
     for fmt in formats:
-        for item in texts if fmt == "txt" else tables:
+        for item in texts if fmt == "txt" else (html_documents if html_documents is not None else tables + html_texts) if fmt == "html" else tables:
             # Interpret both Windows and POSIX source basenames on either OS.
             source_name = str(item.get("fileName") or "识别结果").replace("\\", "/").split("/")[-1]
             stem = Path(source_name).stem
-            suffix = ".tables.html" if fmt == "html" else f".{fmt}"
+            suffix = (".text.html" if item.get("mode") == "text" else ".tables.html") if fmt == "html" else f".{fmt}"
+            if item.get("combinedHtml"):
+                suffix = ".html"
             documents.append({"name": _decorate(stem, item, options) + suffix, "format": fmt,
                               "ids": item.get("ids") or [item.get("id")], "item": item})
     return documents
@@ -122,6 +173,9 @@ def export_results(payload: dict[str, Any]) -> dict[str, Any]:
             render_item = {**item["item"], "fileName": safe_name(source_name)}
             if item["format"] == "txt":
                 rendered = export_text_results(temporary, [render_item])["files"][0]["path"]
+            elif item["format"] == "html" and render_item.get("mode") == "text":
+                rendered = str(Path(temporary) / f"text-{ordinal}.html")
+                Path(rendered).write_text(text_html(str(render_item.get("html", html.escape(str(render_item.get("text", "")))))), encoding="utf-8")
             else:
                 rendered = export_table_results(temporary, [render_item], [item["format"]])["files"][0][item["format"]]
             target = item["target"]

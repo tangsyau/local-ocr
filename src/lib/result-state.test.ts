@@ -16,7 +16,7 @@ describe("incremental page results", () => {
     expect(result.pageCount).toBe(100);
     expect(result.text.startsWith("page-0\n\npage-1")).toBe(true);
     const completed = completeStreamingResult(result, false, 123);
-    expect(completed.partial).toBeUndefined();
+    expect(completed.partial).toBe(false);
     expect(completed.pages).toHaveLength(100);
     expect(completed.elapsedMs).toBe(123);
   });

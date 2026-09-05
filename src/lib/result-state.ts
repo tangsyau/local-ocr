@@ -32,6 +32,7 @@ export function finalizeResult(value: Partial<OcrResult>, pagesValue: OcrPage[],
     profile: value.profile === "accurate" ? "accurate" : "fast",
     resultType: mode,
     cancelled: value.cancelled === true,
+    partial: value.partial === true,
     text: textEdited && typeof value.text === "string" ? value.text : generatedText || String(value.text || ""),
     pageCount: pages.length,
     completedPageCount: pages.length,
@@ -42,6 +43,8 @@ export function finalizeResult(value: Partial<OcrResult>, pagesValue: OcrPage[],
     scoreThreshold: Number.isFinite(value.scoreThreshold) ? Number(value.scoreThreshold) : undefined,
     sourceSize: Number.isFinite(value.sourceSize) ? Number(value.sourceSize) : undefined,
     sourceMtimeNs: typeof value.sourceMtimeNs === "string" ? value.sourceMtimeNs : undefined,
+    pdfSource: value.pdfSource ?? "ocr",
+    rubyEnabled: value.rubyEnabled === true,
     blockCount: pages.reduce((sum, page) => sum + page.blocks.length, 0),
     rawTableCount: pages.reduce((sum, page) => sum + page.tables.length, 0),
     tableCount: tables.length,
@@ -55,6 +58,7 @@ export function beginStreamingResult(options: {
   path: string; profile: ModelProfile; mode: RecognitionMode; threshold: number;
   totalPageCount: number; selectedPageCount: number; pageRange: string; rotation: number;
   sourceSize?: number; sourceMtimeNs?: string; previous?: OcrResult; keepEditedText?: boolean;
+  pdfSource?: "auto" | "ocr"; rubyEnabled?: boolean;
 }): OcrResult {
   const base = options.previous
     ? finalizeResult(options.previous, options.previous.pages, options.keepEditedText === true)
@@ -71,6 +75,7 @@ export function beginStreamingResult(options: {
     scoreThreshold: options.threshold,
     sourceSize: options.sourceSize,
     sourceMtimeNs: options.sourceMtimeNs,
+    pdfSource: options.pdfSource ?? "ocr", rubyEnabled: options.rubyEnabled === true,
     // During streaming, show raw tables. Cross-page merging is finalized once.
     tables: base.pages.flatMap((page) => page.tables),
     tableCount: base.rawTableCount
@@ -100,11 +105,14 @@ export function completeStreamingResult(result: OcrResult, cancelled: boolean, e
 export function canResumeResult(result: OcrResult | undefined, options: {
   profile: ModelProfile; mode: RecognitionMode; threshold: number; pageRange: string; rotation: number;
   sourceSize?: number; sourceMtimeNs?: string;
+  pdfSource?: "auto" | "ocr"; rubyEnabled?: boolean;
 }): boolean {
   if (!result?.pages.length || result.pageCount >= (result.selectedPageCount ?? result.totalPageCount)) return false;
   return result.profile === options.profile && result.resultType === options.mode
     && result.scoreThreshold === options.threshold && (result.pageRange ?? "") === options.pageRange
     && (result.rotation ?? 0) === options.rotation
     && result.sourceSize === options.sourceSize && result.sourceMtimeNs === options.sourceMtimeNs
+    && (result.pdfSource ?? "ocr") === (options.pdfSource ?? "ocr")
+    && (result.rubyEnabled === true) === (options.rubyEnabled === true)
     && options.sourceSize !== undefined && Boolean(options.sourceMtimeNs);
 }

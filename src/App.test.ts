@@ -66,6 +66,46 @@ beforeEach(() => {
 
 afterEach(() => { wrapper?.unmount(); wrapper = null; vi.restoreAllMocks(); });
 
+describe("text projection controls", () => {
+  function savedText() {
+    const r=result("中文第一行\n继续正文");
+    r.pages[0]={...r.pages[0],schemaVersion:1,rawText:r.text,width:600,height:800,source:"pdf-text",
+      blocks:[{text:"中文第一行",score:null,box:[20,100,420,120],polygon:[],fontSize:20,direction:"horizontal"},
+              {text:"继续正文",score:null,box:[20,126,420,146],polygon:[],fontSize:20,direction:"horizontal"}]};
+    mock.load.mockResolvedValue({schema:2,selectedTaskId:"saved",settings:defaultSettings,
+      tasks:[{id:"saved",path:"/book.pdf",fileName:"book.pdf",batchId:"saved",batchIndex:0,status:"completed",resultType:"text",result:r}]});
+    return r;
+  }
+  it("switches original and formatted output without new recognition",async()=>{
+    savedText(); wrapper=mount(App); await flushPromises();
+    expect(wrapper.find<HTMLTextAreaElement>('[aria-label="识别文本"]').element.value).toBe("中文第一行继续正文");
+    await wrapper.find('[aria-label="原始或整理后文本"]').setValue("true");
+    expect(wrapper.find<HTMLTextAreaElement>('[aria-label="识别文本"]').element.value).toBe("中文第一行\n继续正文");
+    expect(wrapper.find<HTMLTextAreaElement>('[aria-label="识别文本"]').element.readOnly).toBe(true);
+    expect(mock.request.mock.calls.some(c=>c[0]==="recognize")).toBe(false);
+  });
+  it("does not overwrite user corrections when formatting changes",async()=>{
+    savedText(); wrapper=mount(App); await flushPromises();
+    await wrapper.find('[aria-label="识别文本"]').setValue("我手工校对的正文");
+    await wrapper.find('[aria-label="文本整理"]').setValue("original");
+    expect(wrapper.find<HTMLTextAreaElement>('[aria-label="识别文本"]').element.value).toBe("我手工校对的正文");
+    await button("恢复自动整理版").trigger("click"); await flushPromises();
+    expect(wrapper.find<HTMLTextAreaElement>('[aria-label="识别文本"]').element.value).toBe("中文第一行\n继续正文");
+  });
+  it("renders ruby as safe markup and copies parenthetical text",async()=>{
+    const r=savedText();
+    r.pages[0].blocks[0].ruby=[{start:0,end:2,text:"<よみ>"}];
+    wrapper=mount(App); await flushPromises();
+    await wrapper.find('[aria-label="注音输出"]').setValue("ruby");
+    expect(wrapper.find("ruby rt").text()).toBe("<よみ>");
+    expect(wrapper.find("よみ").exists()).toBe(false);
+    const writeText=vi.fn(async()=>{});
+    Object.defineProperty(navigator,"clipboard",{configurable:true,value:{writeText}});
+    await button("复制全文").trigger("click"); await flushPromises();
+    expect(writeText).toHaveBeenCalledWith("中文（<よみ>）第一行继续正文");
+  });
+});
+
 describe("batch and recovery interactions", () => {
   it("applies PDF page ranges per task and passes them to recognition", async () => {
     wrapper = mount(App); await flushPromises();

@@ -1,5 +1,6 @@
 import { finalizeResult, inferResultMode } from "./result-state";
 import type { ModelProfile, OcrPage, OcrTask, RecognitionMode } from "./types";
+import { normalizeTextSettings, type TextSettings } from "./text-processing";
 
 export interface AppSettings {
   profile: ModelProfile;
@@ -13,6 +14,8 @@ export interface AppSettings {
   exportSuffix: string;
   exportName: string;
   localModelsOnly?: boolean;
+  textSettings?: TextSettings;
+  rawTextView?: boolean;
 }
 
 export interface SavedSession {
@@ -56,6 +59,7 @@ export function restoreSession(value: unknown, storedPages: Map<string, OcrPage[
     }
     const resultType = result ? inferResultMode(result, task.resultType) : task.resultType === "table" ? "table" : "text";
     const interrupted = task.status === "running" || task.status === "paused";
+    if (interrupted && result) result.partial = true;
     return {
       ...task,
       result,
@@ -83,7 +87,8 @@ export function restoreSession(value: unknown, storedPages: Map<string, OcrPage[
     exportPrefix: String(input.exportPrefix || "").slice(0, 100),
     exportSuffix: String(input.exportSuffix || "").slice(0, 100),
     exportName: String(input.exportName || defaultSettings.exportName).slice(0, 100),
-    localModelsOnly: input.localModelsOnly === true
+    localModelsOnly: input.localModelsOnly === true,
+    textSettings: normalizeTextSettings(input.textSettings), rawTextView: input.rawTextView === true
   };
   return {
     schema: 2, savedAt: String(data.savedAt || ""),

@@ -176,6 +176,8 @@ class SidecarServer:
                 page_range=str(params.get("pageRange") or ""),
                 rotation=params.get("rotation", 0),
                 completed_pages=list(params.get("completedPages") or []),
+                pdf_source=str(params.get("pdfSource") or "ocr"),
+                ruby_enabled=params.get("rubyEnabled", False),
             )
             response = {"id": request_id, "type": "result", "result": result}
             record_event("recognize", "cancelled" if result.get("cancelled") else "ok")
@@ -314,7 +316,7 @@ class SidecarServer:
             target = os.environ.get("LOCAL_OCR_UI_SMOKE_DIR")
             if not target or not Path(target).is_dir():
                 raise ValueError("UI 测试未启用")
-            report = {"appVersion": "0.9.2", "sidecar": True,
+            report = {"appVersion": "0.10.0", "sidecar": True,
                       "width": int(params.get("width") or 0), "height": int(params.get("height") or 0),
                       "sidebarFits": bool(params.get("sidebarFits"))}
             marker = Path(target) / "ready.tmp"

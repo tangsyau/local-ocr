@@ -8,12 +8,15 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import sys
 import tempfile
 from pathlib import Path
 
 from platform_target import target_triple
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "sidecar/tests"))
+from test_text_pipeline import create_test_pdf
 spec = importlib.util.spec_from_file_location("smoke_sidecar", ROOT / "scripts/smoke-sidecar.py")
 smoke = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(smoke)
@@ -31,6 +34,10 @@ def main() -> None:
             document.save(pdf_path)
         png_path = root / "image.png"
         smoke.write_smoke_png(png_path)
+        text_pdf = root / "embedded-text.pdf"
+        mixed_pdf = root / "mixed-text.pdf"
+        create_test_pdf(text_pdf, ["Native PDF extraction verification."])
+        create_test_pdf(mixed_pdf, ["Native first page.", None])
         pack_path = root / "LocalOCR-models"
         requests = [
             smoke.request("pack-export", "export_model_pack", {"directory": directory, "capabilities": [{"profile": "fast", "mode": "table"}]}),
@@ -39,6 +46,9 @@ def main() -> None:
             smoke.request("selected-pages", "recognize", {"path": str(pdf_path), "pageRange": "1,3", "mode": "text"}),
             smoke.request("resume-selected-pages", "recognize", {"path": str(pdf_path), "pageRange": "1,3", "mode": "text", "completedPages": [0]}),
             smoke.request("rotated-image", "recognize", {"path": str(png_path), "rotation": 90, "mode": "text"}),
+            smoke.request("embedded-text", "recognize", {"path": str(text_pdf), "pdfSource": "auto", "mode": "text", "rubyEnabled": True}),
+            smoke.request("mixed-text", "recognize", {"path": str(mixed_pdf), "pdfSource": "auto", "mode": "text"}),
+            smoke.request("ruby-image", "recognize", {"path": str(png_path), "mode": "text", "rubyEnabled": True}),
             smoke.request("done", "shutdown"),
         ]
         results, events = smoke.run_sidecar(binary, requests, 1800, "portable-models-and-document-settings")
@@ -60,6 +70,11 @@ def main() -> None:
         resumed_progress = [event for event in events["resume-selected-pages"] if event.get("event") == "progress"]
         assert [event["page"] for event in resumed_progress] == [2]
         assert results["rotated-image"]["result"]["rotation"] == 90
+        embedded = results["embedded-text"]["result"]["pages"][0]
+        assert embedded["source"] == "pdf-text" and "Native PDF extraction" in embedded["text"]
+        assert embedded["rubyEnabled"] is True
+        assert [p["source"] for p in results["mixed-text"]["result"]["pages"]] == ["pdf-text", "ocr"]
+        assert results["ruby-image"]["result"]["pages"][0]["rubyEnabled"] is True
         print("Frozen model export/import, local-only preparation, PDF selection/resume and rotation passed")
 
 
