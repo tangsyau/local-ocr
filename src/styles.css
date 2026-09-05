@@ -151,6 +151,12 @@ h1 { margin: 0; font-size: 28px; letter-spacing: -.04em; }
 .document-control-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: #526158; font-size: 11px; }
 .document-control-row button, .document-control-row select, .document-control-row input { padding: 5px 7px; border: 1px solid #cbd6cc; border-radius: 6px; color: #3f644c; background: #fff; font-size: 11px; max-width: 100%; }
 .document-control-row input { width: 135px; }
+.page-range-row { margin-bottom: 8px; }
+.page-range-scope { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.page-range-scope-label { min-width: 112px; color: #526158; font-size: 11px; font-weight: 650; }
+.page-range-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.page-range-actions button { min-height: 29px; }
+.page-range-context { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 6px; color: #738077; font-size: 10px; line-height: 1.5; }
 .document-controls p { margin: 7px 0 0; color: #738077; font-size: 10px; line-height: 1.5; }
 .document-controls p.document-settings-error { color: #a14237; }
 .rerun-row { margin-top: 8px; }
@@ -255,12 +261,20 @@ textarea { flex: 1 1 0; width: 100%; height: auto; min-height: 0; resize: none; 
   .sidebar > .step-card:last-child { border-bottom: 0; margin-bottom: 0; padding-bottom: 0; }
 }
 :root { --text-settings-gap: 10px; }
-.text-settings { flex: 0 0 auto; padding: 10px 14px; border-bottom: 1px solid #dde4df; }
-.text-settings p { color: #66746b; font-size: 12px; line-height: 1.6; }
-.text-settings summary { cursor: pointer; font-size: 13px; color: #466952; }
-.text-settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: var(--text-settings-gap); padding-top: 12px; }
-.text-settings-grid label { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 13px; }
-.text-settings select, .text-result-tools select { max-width: 100%; font: inherit; padding: 5px; border: 1px solid #cbd5cd; border-radius: 5px; background: #fff; color: #283c30; }
+.text-settings { flex: 0 0 auto; padding: 10px 14px 11px; border-bottom: 1px solid #dde4df; background: #fafcf9; }
+.text-settings summary { display: flex; align-items: baseline; gap: 8px; cursor: pointer; font-size: 13px; color: #315f43; }
+.text-settings summary > span { font-weight: 700; }
+.text-settings summary > small { color: #708077; font-size: 11px; font-weight: 400; }
+.text-settings[open] summary { margin-bottom: 10px; }
+.text-settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr)); gap: var(--text-settings-gap); align-items: stretch; }
+.text-setting-field { min-width: 0; min-height: 70px; display: grid; grid-template-rows: 17px 36px; gap: 6px; padding: 8px 10px; border: 1px solid #e0e7e1; border-radius: 8px; background: #fff; }
+.text-setting-name { overflow: hidden; color: #627269; font-size: 11px; font-weight: 650; line-height: 17px; text-overflow: ellipsis; white-space: nowrap; }
+.text-setting-field select { width: 100%; height: 36px; min-width: 0; }
+.text-setting-toggle { min-width: 0; min-height: 36px; display: flex; align-items: center; gap: 8px; color: #263c2f; font-size: 12px; line-height: 1.35; }
+.text-setting-toggle input { width: 16px; height: 16px; flex: 0 0 16px; margin: 0; accent-color: #397c55; }
+.text-settings .text-settings-help { margin: 9px 2px 0; color: #66746b; font-size: 11px; line-height: 1.55; }
+.text-settings select, .text-result-tools select { max-width: 100%; font: inherit; padding: 5px 8px; border: 1px solid #cbd5cd; border-radius: 5px; background: #fff; color: #283c30; }
+.text-settings select:disabled { background: #f3f5f3; color: #8b958f; }
 .text-result-tools { display: flex; flex-wrap: wrap; flex: 0 0 auto; gap: 7px 12px; padding: 10px 16px; align-items: center; font-size: 12px; border-bottom: 1px solid #dde4df; max-height: 180px; overflow: auto; }
 .text-result-tools small { flex-basis: 100%; color: #66746b; }
 .ruby-text-preview { flex: 1 1 0; min-height: 0; min-width: 0; overflow: auto; padding: 20px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 16px; line-height: 2.1; }

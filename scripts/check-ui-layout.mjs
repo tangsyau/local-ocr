@@ -90,6 +90,27 @@ try {
       });
       assert.ok(dimensions.documentWidth <= dimensions.width + 2, "app overflows horizontally");
       if (screenWidth === 1920) assert.ok(dimensions.sidebarFits, `1080p initial sidebar overflows at ${scale}`);
+      const settingsLayout = await page.evaluate(() => {
+        const panel = document.querySelector("details.text-settings");
+        const fields = [...document.querySelectorAll(".text-setting-field")];
+        const selects = [...document.querySelectorAll(".text-setting-field select")];
+        const rows = new Map();
+        for (const field of fields) {
+          const box = field.getBoundingClientRect();
+          const key = Math.round(box.top);
+          rows.set(key, [...(rows.get(key) ?? []), box]);
+        }
+        return {
+          open: panel?.hasAttribute("open"),
+          fieldCount: fields.length,
+          selectHeights: selects.map((item) => Math.round(item.getBoundingClientRect().height)),
+          rowHeights: [...rows.values()].map((row) => row.map((box) => Math.round(box.height))),
+        };
+      });
+      assert.equal(settingsLayout.open, true, "document settings must be expanded initially");
+      assert.equal(settingsLayout.fieldCount, 5);
+      assert.equal(new Set(settingsLayout.selectHeights).size, 1, "setting selects must have equal heights");
+      for (const row of settingsLayout.rowHeights) assert.equal(new Set(row).size, 1, "setting fields in a row must align vertically");
       await page.screenshot({ path: path.join(screenshots, `${screenWidth}-${scale}-initial.png`) });
       await page.evaluate(async () => {
         const table = { pageIndex: 0, endPageIndex: 0, tableIndex: 0, sourceTableCount: 1, score: .95, box: [], html: "",

@@ -111,6 +111,7 @@ const completedCount = computed(() => tasks.value.filter((task) => task.status =
 const exportableTasks = computed(() => tasks.value.filter((task) => task.result && task.result.pageCount > 0));
 const hasUnexported = computed(() => exportableTasks.value.some((task) => (task.exportedRevision ?? -1) !== (task.revision ?? 0)));
 const failedCount = computed(() => tasks.value.filter((task) => task.status === "failed" || task.status === "cancelled").length);
+const checkedPdfCount = computed(() => tasks.value.filter((task) => checkedTaskIds.value.includes(task.id) && isPdfPath(task.path)).length);
 const saveBadgeLabel = computed(() => ({
   loading: "正在读取本机记录",
   idle: "自动保存已启用",
@@ -734,7 +735,7 @@ async function copyDiagnostics(): Promise<void> {
     }
   }
   const diagnostics: DiagnosticInfo = {
-    appVersion: "0.10.0",
+    appVersion: "0.10.1",
     sidecarRunning: ocrSidecar.running,
     sidecarStderr: ocrSidecar.stderr ? "运行日志已省略，以免复制文档路径或识别相关输出" : "",
     ...remote
@@ -1344,26 +1345,50 @@ function showError(error: unknown): void {
         <article class="panel preview-panel">
           <div class="panel-title"><span>文档预览</span><small>{{ fileName || "尚未选择任务" }}</small></div>
           <div class="preview-content">
-          <details class="text-settings">
-            <summary>文档设置 · 文字来源、注音与文本整理</summary>
+          <details class="text-settings" open>
+            <summary><span>文档设置</span><small>文字来源、注音与文本整理</small></summary>
             <div class="text-settings-grid">
-              <label>PDF 文字来源<select v-model="textSettings.pdfSource" :disabled="modelControlsBusy" aria-label="PDF 文字来源"><option value="auto">自动（优先提取文本层）</option><option value="ocr">强制 OCR</option></select></label>
-              <label>文本整理<select v-model="textSettings.textMode" :disabled="queueRunning || exportBusy" aria-label="文本整理"><option value="original">保留原始断行</option><option value="smart">智能整理</option><option value="continuous">合并为连续文本</option></select></label>
-              <label><input v-model="textSettings.crossPageText" type="checkbox" :disabled="queueRunning || exportBusy" />合并跨页正文（仅相邻完整页面）</label>
-              <label><input v-model="textSettings.rubyEnabled" type="checkbox" :disabled="modelControlsBusy" aria-label="识别日语注音" />识别日语注音（横排 / 竖排）</label>
-              <label>注音输出<select v-model="textSettings.rubyFormat" :disabled="queueRunning || exportBusy" aria-label="注音输出"><option value="ignore">忽略注音</option><option value="parentheses">括号保留</option><option value="ruby">Ruby 小字（HTML）</option></select></label>
+              <label class="text-setting-field">
+                <span class="text-setting-name">PDF 文字来源</span>
+                <select v-model="textSettings.pdfSource" :disabled="modelControlsBusy" aria-label="PDF 文字来源"><option value="auto">自动（优先提取文本层）</option><option value="ocr">强制 OCR</option></select>
+              </label>
+              <label class="text-setting-field">
+                <span class="text-setting-name">文本整理</span>
+                <select v-model="textSettings.textMode" :disabled="queueRunning || exportBusy" aria-label="文本整理"><option value="original">保留原始断行</option><option value="smart">智能整理</option><option value="continuous">合并为连续文本</option></select>
+              </label>
+              <label class="text-setting-field">
+                <span class="text-setting-name">跨页正文</span>
+                <span class="text-setting-toggle"><input v-model="textSettings.crossPageText" type="checkbox" :disabled="queueRunning || exportBusy" />合并相邻完整页面</span>
+              </label>
+              <label class="text-setting-field">
+                <span class="text-setting-name">日语注音</span>
+                <span class="text-setting-toggle"><input v-model="textSettings.rubyEnabled" type="checkbox" :disabled="modelControlsBusy" aria-label="识别日语注音" />识别横排与竖排注音</span>
+              </label>
+              <label class="text-setting-field">
+                <span class="text-setting-name">注音输出</span>
+                <select v-model="textSettings.rubyFormat" :disabled="queueRunning || exportBusy || !textSettings.rubyEnabled" aria-label="注音输出"><option value="ignore">忽略注音</option><option value="parentheses">括号保留</option><option value="ruby">Ruby 小字（HTML）</option></select>
+              </label>
             </div>
-            <p>来源和注音识别设置在下次识别生效；整理与注音格式无需重识别。文字模式适用，表格保持原流程。自动判断不能发现所有文本层错误，内容异常时请选择强制 OCR。</p>
+            <p class="text-settings-help">来源和注音识别设置在下次识别生效；整理与注音格式无需重识别。仅用于文字模式，表格保持原流程。自动判断未发现文本层错误时，可改用强制 OCR。</p>
           </details>
           <div v-if="selectedTask" class="document-controls">
             <template v-if="isPdf">
-              <div class="document-control-row">
+              <div class="document-control-row page-range-row">
                 <label>识别页码 <select v-model="pageRangeMode" :disabled="modelControlsBusy"><option value="all">全部页</option><option value="custom">指定页码</option></select></label>
                 <input v-if="pageRangeMode === 'custom'" v-model="pageRangeDraft" aria-label="指定 PDF 页码" placeholder="例如 1,3-5,8" maxlength="2000" :disabled="modelControlsBusy" />
-                <button :disabled="modelControlsBusy" @click="applyPageRange()">应用页码</button>
-                <button :disabled="modelControlsBusy || !checkedTaskIds.length" @click="applyPageRange(true)">应用到勾选 PDF</button>
               </div>
-              <p>已应用：{{ selectedTask.pageRange || "全部页" }}{{ selectedTask.sourcePageCount ? ` · 原文共 ${selectedTask.sourcePageCount} 页` : "" }}。页码按 PDF 实际顺序计算，不是正文印刷页码。</p>
+              <div class="page-range-scope">
+                <span class="page-range-scope-label">页码设置应用范围</span>
+                <div class="page-range-actions">
+                  <button :disabled="modelControlsBusy" @click="applyPageRange()">应用到当前 PDF</button>
+                  <button :disabled="modelControlsBusy || !checkedPdfCount" @click="applyPageRange(true)">应用到勾选的 PDF（{{ checkedPdfCount }}）</button>
+                </div>
+              </div>
+              <div class="page-range-context">
+                <span>当前 PDF：{{ selectedTask.fileName }}</span>
+                <span>已勾选 PDF：{{ checkedPdfCount }} 个</span>
+              </div>
+              <p>当前设置：{{ selectedTask.pageRange || "全部页" }}{{ selectedTask.sourcePageCount ? ` · 原文共 ${selectedTask.sourcePageCount} 页` : "" }}。页码按 PDF 实际顺序计算，不是正文印刷页码；设置会在下次识别时生效。</p>
               <p v-if="documentSettingsError" class="document-settings-error" role="alert">{{ documentSettingsError }}</p>
             </template>
             <template v-else>

@@ -76,6 +76,16 @@ describe("text projection controls", () => {
       tasks:[{id:"saved",path:"/book.pdf",fileName:"book.pdf",batchId:"saved",batchIndex:0,status:"completed",resultType:"text",result:r}]});
     return r;
   }
+  it("shows an aligned document settings panel by default", async () => {
+    wrapper = mount(App); await flushPromises();
+    const settings = wrapper.find("details.text-settings");
+    expect(settings.attributes("open")).toBeDefined();
+    expect(settings.findAll(".text-setting-field")).toHaveLength(5);
+    expect(settings.findAll(".text-setting-name").map((item) => item.text())).toEqual([
+      "PDF 文字来源", "文本整理", "跨页正文", "日语注音", "注音输出"
+    ]);
+    expect(settings.findAll("select")).toHaveLength(3);
+  });
   it("switches original and formatted output without new recognition",async()=>{
     savedText(); wrapper=mount(App); await flushPromises();
     expect(wrapper.find<HTMLTextAreaElement>('[aria-label="识别文本"]').element.value).toBe("中文第一行继续正文");
@@ -96,6 +106,7 @@ describe("text projection controls", () => {
     const r=savedText();
     r.pages[0].blocks[0].ruby=[{start:0,end:2,text:"<よみ>"}];
     wrapper=mount(App); await flushPromises();
+    await wrapper.find('[aria-label="识别日语注音"]').setValue(true);
     await wrapper.find('[aria-label="注音输出"]').setValue("ruby");
     expect(wrapper.find("ruby rt").text()).toBe("<よみ>");
     expect(wrapper.find("よみ").exists()).toBe(false);
@@ -112,7 +123,7 @@ describe("batch and recovery interactions", () => {
     mock.dropped!(["/document.pdf"]); await flushPromises();
     await wrapper.find(".document-controls select").setValue("custom");
     await wrapper.find('[aria-label="指定 PDF 页码"]').setValue("2,4-5");
-    await button("应用页码").trigger("click"); await flushPromises();
+    await button("应用到当前 PDF").trigger("click"); await flushPromises();
     expect(wrapper.find(".task-main").text()).toContain("2,4-5");
     await button("开始批量").trigger("click"); await flushPromises();
     expect(mock.request.mock.calls.find(call => call[0] === "recognize")?.[1].pageRange).toBe("2,4-5");
