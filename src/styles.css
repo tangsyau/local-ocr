@@ -281,6 +281,8 @@ textarea { flex: 1 1 0; width: 100%; height: auto; min-height: 0; resize: none; 
 .text-setting-toggle input { width: 16px; height: 16px; flex: 0 0 16px; margin: 0; accent-color: #397c55; }
 .text-settings .text-settings-help { margin: 9px 2px 0; color: #66746b; font-size: 11px; line-height: 1.55; }
 .text-settings select, .text-result-tools select { max-width: 100%; font: inherit; padding: 5px 8px; border: 1px solid #cbd5cd; border-radius: 5px; background: #fff; color: #283c30; }
+.text-settings .text-setting-field select { font-size: 12px; }
+.document-controls .page-range-row input { font-size: 11px; }
 .text-settings select:disabled { background: #f3f5f3; color: #8b958f; }
 .text-result-tools { display: flex; flex-wrap: wrap; flex: 0 0 auto; gap: 7px 12px; padding: 10px 16px; align-items: center; font-size: 12px; border-bottom: 1px solid #dde4df; max-height: 180px; overflow: auto; }
 .text-view-switch { display: inline-flex; padding: 2px; border-radius: 7px; background: #e9ede8; }
