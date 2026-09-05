@@ -152,6 +152,9 @@ h1 { margin: 0; font-size: 28px; letter-spacing: -.04em; }
 .document-control-row button, .document-control-row select, .document-control-row input { padding: 5px 7px; border: 1px solid #cbd6cc; border-radius: 6px; color: #3f644c; background: #fff; font-size: 11px; max-width: 100%; }
 .document-control-row input { width: 135px; }
 .page-range-row { margin-bottom: 8px; }
+.page-range-label { font-weight: 650; }
+.page-range-radio { display: inline-flex; align-items: center; gap: 4px; }
+.page-range-radio input { width: 14px; height: 14px; margin: 0; accent-color: #397c55; }
 .page-range-scope { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .page-range-scope-label { min-width: 112px; color: #526158; font-size: 11px; font-weight: 650; }
 .page-range-actions { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -224,6 +227,10 @@ textarea { flex: 1 1 0; width: 100%; height: auto; min-height: 0; resize: none; 
 .result-focus-mode .panel-title { padding-inline: 22px; }
 .result-focus-mode textarea { padding: 24px; font-size: 15px; }
 .result-focus-mode .table-results { padding: 18px 22px; }
+.focus-text-compare { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1px; background: #dce4de; }
+.focus-text-column { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: #fff; }
+.focus-text-heading { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; padding: 10px 24px; border-bottom: 1px solid #e1e8e2; color: #466952; font-size: 13px; font-weight: 700; }
+.focus-text-column textarea { width: 100%; min-height: 0; flex: 1; resize: none; border: 0; border-radius: 0; }
 
 @media (max-width: 1100px) {
   .workspace { grid-template-columns: 300px minmax(0, 1fr); }
@@ -276,6 +283,9 @@ textarea { flex: 1 1 0; width: 100%; height: auto; min-height: 0; resize: none; 
 .text-settings select, .text-result-tools select { max-width: 100%; font: inherit; padding: 5px 8px; border: 1px solid #cbd5cd; border-radius: 5px; background: #fff; color: #283c30; }
 .text-settings select:disabled { background: #f3f5f3; color: #8b958f; }
 .text-result-tools { display: flex; flex-wrap: wrap; flex: 0 0 auto; gap: 7px 12px; padding: 10px 16px; align-items: center; font-size: 12px; border-bottom: 1px solid #dde4df; max-height: 180px; overflow: auto; }
+.text-view-switch { display: inline-flex; padding: 2px; border-radius: 7px; background: #e9ede8; }
+.text-view-switch button { padding: 4px 10px; border: 0; border-radius: 5px; color: #647068; background: transparent; font: inherit; cursor: pointer; }
+.text-view-switch button.active { color: #2e6240; background: #fff; box-shadow: 0 1px 4px rgba(30,45,35,.1); }
 .text-result-tools small { flex-basis: 100%; color: #66746b; }
 .ruby-text-preview { flex: 1 1 0; min-height: 0; min-width: 0; overflow: auto; padding: 20px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 16px; line-height: 2.1; }
 .ruby-text-preview rt { font-size: .6em; }

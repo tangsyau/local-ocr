@@ -30,6 +30,12 @@ const rubyPreview = ref(true);
 const textProjection = computed(() => selectedResult.value
   ? projectText(selectedResult.value, textSettings.value, selectedTask.value?.textEdited, rawTextView.value)
   : { text: "", html: "", raw: "", warnings: [] });
+const formattedTextProjection = computed(() => selectedResult.value
+  ? projectText(selectedResult.value, textSettings.value, selectedTask.value?.textEdited, false)
+  : { text: "", html: "", raw: "", warnings: [] });
+const rawTextProjection = computed(() => selectedResult.value
+  ? projectText(selectedResult.value, textSettings.value, false, true)
+  : { text: "", html: "", raw: "", warnings: [] });
 const resultFocusMode = ref(false);
 const mergeCrossPageTables = ref(true);
 const exportTxt = ref(true);
@@ -735,7 +741,7 @@ async function copyDiagnostics(): Promise<void> {
     }
   }
   const diagnostics: DiagnosticInfo = {
-    appVersion: "0.10.1",
+    appVersion: "0.11.0",
     sidecarRunning: ocrSidecar.running,
     sidecarStderr: ocrSidecar.stderr ? "运行日志已省略，以免复制文档路径或识别相关输出" : "",
     ...remote
@@ -1118,6 +1124,12 @@ async function exportSelectedFormats(): Promise<void> {
   }
 }
 
+async function copyText(value: string, label = "识别文本"): Promise<void> {
+  if (!value) return;
+  await navigator.clipboard.writeText(value);
+  status.value = `${fileName.value} 的${label}已复制到剪贴板`;
+}
+
 async function copyCurrentResult(): Promise<void> {
   if (!selectedResult.value) return;
   if (resultView.value === "tables") {
@@ -1127,9 +1139,7 @@ async function copyCurrentResult(): Promise<void> {
     status.value = `已复制 ${selectedTables.value.length} 个表格的制表符文本，可直接粘贴到 Excel`;
     return;
   }
-  if (!textProjection.value.text) return;
-  await navigator.clipboard.writeText(textProjection.value.text);
-  status.value = `${fileName.value} 的识别文本已复制到剪贴板`;
+  await copyText(textProjection.value.text);
 }
 
 function updateSelectedText(event: Event): void {
@@ -1374,13 +1384,14 @@ function showError(error: unknown): void {
           <div v-if="selectedTask" class="document-controls">
             <template v-if="isPdf">
               <div class="document-control-row page-range-row">
-                <label>识别页码 <select v-model="pageRangeMode" :disabled="modelControlsBusy"><option value="all">全部页</option><option value="custom">指定页码</option></select></label>
-                <input v-if="pageRangeMode === 'custom'" v-model="pageRangeDraft" aria-label="指定 PDF 页码" placeholder="例如 1,3-5,8" maxlength="2000" :disabled="modelControlsBusy" />
+                <span class="page-range-label">识别页码</span>
+                <label class="page-range-radio"><input v-model="pageRangeMode" value="all" type="radio" name="page-range-mode" :disabled="modelControlsBusy" @change="applyPageRange()" />全部页</label>
+                <label class="page-range-radio"><input v-model="pageRangeMode" value="custom" type="radio" name="page-range-mode" :disabled="modelControlsBusy" />指定页码</label>
+                <input v-if="pageRangeMode === 'custom'" v-model="pageRangeDraft" aria-label="指定 PDF 页码" placeholder="例如 1,3-5,8" maxlength="2000" :disabled="modelControlsBusy" @change="applyPageRange()" />
               </div>
               <div class="page-range-scope">
                 <span class="page-range-scope-label">页码设置应用范围</span>
                 <div class="page-range-actions">
-                  <button :disabled="modelControlsBusy" @click="applyPageRange()">应用到当前 PDF</button>
                   <button :disabled="modelControlsBusy || !checkedPdfCount" @click="applyPageRange(true)">应用到勾选的 PDF（{{ checkedPdfCount }}）</button>
                 </div>
               </div>
@@ -1445,7 +1456,10 @@ function showError(error: unknown): void {
           </div>
           <div v-if="selectedResult" class="result-body">
             <div v-if="resultView === 'text'" class="text-result-tools">
-              <label>显示<select v-model="rawTextView" aria-label="原始或整理后文本" :disabled="exportBusy || queueRunning"><option :value="false">整理后 / 校对版</option><option :value="true">原始结果（只读）</option></select></label>
+              <div class="text-view-switch" role="tablist" aria-label="识别结果版本">
+                <button type="button" :class="{ active: rawTextView }" role="tab" :aria-selected="rawTextView" :disabled="exportBusy || queueRunning" @click="rawTextView = true">整理前</button>
+                <button type="button" :class="{ active: !rawTextView }" role="tab" :aria-selected="!rawTextView" :disabled="exportBusy || queueRunning" @click="rawTextView = false">整理后</button>
+              </div>
               <label v-if="textSettings.rubyFormat === 'ruby' && !rawTextView && !selectedTask?.textEdited"><input v-model="rubyPreview" type="checkbox" />显示 Ruby 小字（取消可校对）</label>
               <button v-if="selectedTask?.textEdited" :disabled="queueRunning || exportBusy" @click="discardTextEdits">恢复自动整理版</button>
               <small v-for="message in textProjection.warnings" :key="message">{{ message }}</small>
@@ -1457,7 +1471,11 @@ function showError(error: unknown): void {
               <div><b>{{ selectedTables.length }}</b><span>{{ mergeCrossPageTables && selectedRawTableCount > selectedMergedTableCount ? `跨页合并（原 ${selectedRawTableCount}）` : "表格" }}</span></div>
               <div><b>{{ (selectedElapsedMs / 1000).toFixed(2) }}s</b><span>用时</span></div>
             </div>
-            <div v-if="resultView === 'text' && textSettings.rubyFormat === 'ruby' && rubyPreview && !rawTextView && !selectedTask?.textEdited" class="ruby-text-preview" aria-label="Ruby 文本预览" v-html="textProjection.html"></div>
+            <div v-if="resultFocusMode && resultView === 'text'" class="focus-text-compare">
+              <section class="focus-text-column"><div class="focus-text-heading"><span>整理前</span><button class="text-button" :disabled="!rawTextProjection.text" @click="copyText(rawTextProjection.text, '整理前文本')">复制全文</button></div><textarea :value="rawTextProjection.text" readonly spellcheck="false" aria-label="整理前文本"></textarea></section>
+              <section class="focus-text-column"><div class="focus-text-heading"><span>整理后</span><button class="text-button" :disabled="!formattedTextProjection.text" @click="copyText(formattedTextProjection.text, '整理后文本')">复制全文</button></div><textarea :value="formattedTextProjection.text" :readonly="exportBusy" spellcheck="false" aria-label="整理后文本" @input="updateSelectedText"></textarea></section>
+            </div>
+            <div v-else-if="resultView === 'text' && textSettings.rubyFormat === 'ruby' && rubyPreview && !rawTextView && !selectedTask?.textEdited" class="ruby-text-preview" aria-label="Ruby 文本预览" v-html="textProjection.html"></div>
             <textarea v-else-if="resultView === 'text'" :value="textProjection.text" :readonly="exportBusy || rawTextView" spellcheck="false" aria-label="识别文本" @input="updateSelectedText"></textarea>
             <TableResultViewer v-else :tables="selectedTables" :view-key="`${selectedTaskId}:${mergeCrossPageTables}`" />
           </div>

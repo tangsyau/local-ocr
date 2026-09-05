@@ -89,7 +89,7 @@ describe("text projection controls", () => {
   it("switches original and formatted output without new recognition",async()=>{
     savedText(); wrapper=mount(App); await flushPromises();
     expect(wrapper.find<HTMLTextAreaElement>('[aria-label="识别文本"]').element.value).toBe("中文第一行继续正文");
-    await wrapper.find('[aria-label="原始或整理后文本"]').setValue("true");
+    await button("整理前").trigger("click");
     expect(wrapper.find<HTMLTextAreaElement>('[aria-label="识别文本"]').element.value).toBe("中文第一行\n继续正文");
     expect(wrapper.find<HTMLTextAreaElement>('[aria-label="识别文本"]').element.readOnly).toBe(true);
     expect(mock.request.mock.calls.some(c=>c[0]==="recognize")).toBe(false);
@@ -121,9 +121,9 @@ describe("batch and recovery interactions", () => {
   it("applies PDF page ranges per task and passes them to recognition", async () => {
     wrapper = mount(App); await flushPromises();
     mock.dropped!(["/document.pdf"]); await flushPromises();
-    await wrapper.find(".document-controls select").setValue("custom");
+    await wrapper.find('input[value="custom"][name="page-range-mode"]').setValue(true);
     await wrapper.find('[aria-label="指定 PDF 页码"]').setValue("2,4-5");
-    await button("应用到当前 PDF").trigger("click"); await flushPromises();
+    await wrapper.find('[aria-label="指定 PDF 页码"]').trigger("change"); await flushPromises();
     expect(wrapper.find(".task-main").text()).toContain("2,4-5");
     await button("开始批量").trigger("click"); await flushPromises();
     expect(mock.request.mock.calls.find(call => call[0] === "recognize")?.[1].pageRange).toBe("2,4-5");
