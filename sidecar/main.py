@@ -316,7 +316,7 @@ class SidecarServer:
             target = os.environ.get("LOCAL_OCR_UI_SMOKE_DIR")
             if not target or not Path(target).is_dir():
                 raise ValueError("UI 测试未启用")
-            report = {"appVersion": "0.11.2", "sidecar": True,
+            report = {"appVersion": "0.12.0", "sidecar": True,
                       "width": int(params.get("width") or 0), "height": int(params.get("height") or 0),
                       "sidebarFits": bool(params.get("sidebarFits"))}
             marker = Path(target) / "ready.tmp"

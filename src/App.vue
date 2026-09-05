@@ -741,7 +741,7 @@ async function copyDiagnostics(): Promise<void> {
     }
   }
   const diagnostics: DiagnosticInfo = {
-    appVersion: "0.11.2",
+    appVersion: "0.12.0",
     sidecarRunning: ocrSidecar.running,
     sidecarStderr: ocrSidecar.stderr ? "运行日志已省略，以免复制文档路径或识别相关输出" : "",
     ...remote
@@ -1456,11 +1456,11 @@ function showError(error: unknown): void {
           </div>
           <div v-if="selectedResult" class="result-body">
             <div v-if="resultView === 'text'" class="text-result-tools">
-              <div class="text-view-switch" role="tablist" aria-label="识别结果版本">
+              <div v-if="!resultFocusMode" class="text-view-switch" role="tablist" aria-label="识别结果版本">
                 <button type="button" :class="{ active: rawTextView }" role="tab" :aria-selected="rawTextView" :disabled="exportBusy || queueRunning" @click="rawTextView = true">整理前</button>
                 <button type="button" :class="{ active: !rawTextView }" role="tab" :aria-selected="!rawTextView" :disabled="exportBusy || queueRunning" @click="rawTextView = false">整理后</button>
               </div>
-              <label v-if="textSettings.rubyFormat === 'ruby' && !rawTextView && !selectedTask?.textEdited"><input v-model="rubyPreview" type="checkbox" />显示 Ruby 小字（取消可校对）</label>
+              <label v-if="textSettings.rubyFormat === 'ruby' && !rawTextView && !selectedTask?.textEdited" title="关闭后以普通文本显示，便于直接校对"><input v-model="rubyPreview" type="checkbox" />显示日语注音（Ruby）</label>
               <button v-if="selectedTask?.textEdited" :disabled="queueRunning || exportBusy" @click="discardTextEdits">恢复自动整理版</button>
               <small v-for="message in textProjection.warnings" :key="message">{{ message }}</small>
               <small v-if="selectedResult.pages.some(p=>p.source === 'pdf-text')">部分或全部页面直接取自 PDF 文本层，未进行 OCR。</small>

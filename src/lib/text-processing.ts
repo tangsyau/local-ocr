@@ -26,6 +26,36 @@ const endSentence = /[。！？.!?][」』”’"')）\]]*$/u;
 const listStart = /^(?:[•●■◆・※]|[-*]\s|\d+[.)、]\s*|[（(]\d+[）)]|[一二三四五六七八九十]+[、．])/u;
 const dialogue = /^[「『“]/u;
 const cjk = /[\u3000-\u30ff\u3400-\u9fff\uf900-\ufaff\uff00-\uffef]/u;
+const han = /[\u3400-\u9fff\uf900-\ufaff]/u;
+
+/** Conservative cleanup for OCR/PDF text in smart and continuous modes. */
+export function normalizeSmartText(value: string): string {
+  let text = value.replace(/\r\n?/gu, "\n");
+  // Whitespace-only lines are noise in extracted PDF text; retain one paragraph gap.
+  text = text.replace(/[ \t\u3000]+(?=\n)/gu, "").replace(/\n[ \t\u3000]+/gu, "\n").replace(/\n{3,}/gu, "\n\n");
+  // Remove OCR spaces around Han characters, but preserve spaces inside Latin words.
+  text = text.replace(/(?<=[\u3400-\u9fff\uf900-\ufaff])[ \t\u3000]+(?=[\u3400-\u9fff\uf900-\ufaff])/gu, "")
+    .replace(/(?<=[\u3400-\u9fff\uf900-\ufaff])[ \t\u3000]+(?=[，。！？、；：,.!?;:()（）])/gu, "")
+    .replace(/(?<=[，。！？、；：,.!?;:()（）])[ \t\u3000]+(?=[\u3400-\u9fff\uf900-\ufaff])/gu, "");
+  text = text.replace(/([（(])[ \t\u3000]+/gu, "$1").replace(/[ \t\u3000]+([）)])/gu, "$1");
+  text = text.replace(/([A-Za-z0-9])[ \t]+([A-Za-z0-9])/gu, "$1 $2");
+  const punctuation: Record<string,string> = { ",":"，", ".":"。", ";":"；", ":":"：", "!":"！", "?":"？", "(":"（", ")":"）" };
+  const chars = Array.from(text);
+  for (let i=0; i<chars.length; i++) {
+    const replacement = punctuation[chars[i]];
+    if (!replacement) continue;
+    const previous = chars.slice(0,i).reverse().find(c => !/[ \t\u3000]/u.test(c)) ?? "";
+    const next = chars.slice(i+1).find(c => !/[ \t\u3000]/u.test(c)) ?? "";
+    if (!cjk.test(previous) && !cjk.test(next)) continue;
+    if (chars[i] === "." && /\d/u.test(previous) && /\d/u.test(next)) continue;
+    chars[i] = replacement;
+  }
+  return chars.join("");
+}
+function normalizeMarkup(value: string): string {
+  return value.split(/(<[^>]*>|&(?:amp|lt|gt|quot|#39);)/gu).map((part, index) =>
+    index % 2 ? part : normalizeSmartText(part)).join("");
+}
 
 function renderBlock(block: OcrBlock, format: TextSettings["rubyFormat"]): { text: string; html: string } {
   const chars = Array.from(block.text); // Python offsets count Unicode codepoints.
@@ -165,5 +195,9 @@ export function projectText(result: OcrResult, settings: TextSettings, edited = 
   const unmatched=result.pages.flatMap(p=>p.blocks).filter(b=>b.role === "ruby-unmatched").length;
   if (unmatched) warnings.push(`${unmatched} 处小字无法可靠绑定，未插入正文，可在原始结果查看。`);
   if (settings.rubyFormat !== "ignore" && result.pages.some(p=>p.blocks.some(b=>b.ruby?.some(r=>r.alignment === "estimated")))) warnings.push("部分注音按位置估算对应范围，请校对汉字与注音的绑定。");
+  if (settings.textMode !== "original") {
+    text = normalizeSmartText(text);
+    html = normalizeMarkup(html);
+  }
   return {text,html,raw,warnings};
 }

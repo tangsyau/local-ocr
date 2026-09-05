@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { defaultTextSettings as defaults, projectText, normalizeTextSettings } from "./text-processing";
+import { defaultTextSettings as defaults, projectText, normalizeTextSettings, normalizeSmartText } from "./text-processing";
 import { canResumeResult, finalizeResult } from "./result-state";
 import type { OcrBlock, OcrPage } from "./types";
 
@@ -8,6 +8,15 @@ const page=(blocks:OcrBlock[],index=0):OcrPage=>({schemaVersion:1,pageIndex:inde
 const result=(pages:OcrPage[])=>finalizeResult({resultType:"text"},pages);
 
 describe("language-aware text projection",()=>{
+  it("normalizes multilingual punctuation, OCR spaces and blank lines conservatively",()=>{
+    expect(normalizeSmartText("中文 , 测试 !\n\n\nEnglish   text 2.5\n日本語 ( テスト )")).toBe("中文，测试！\n\nEnglish text 2.5\n日本語（テスト）");
+    expect(normalizeSmartText("网址 https://example.com/a,b，邮箱 a@example.com")).toBe("网址 https://example.com/a,b，邮箱 a@example.com");
+  });
+  it("applies cleanup only to smart and continuous projections",()=>{
+    const r=result([page([block("中文 , 测试"),block("第二 行",126)])]);
+    expect(projectText(r,defaults).text).toBe("中文，测试第二行");
+    expect(projectText(r,{...defaults,textMode:"original"}).text).toBe("中文 , 测试\n第二 行");
+  });
   it("joins CJK without spaces and English with spaces",()=>{
     expect(projectText(result([page([block("中文正文",100),block("继续正文。",126)])]),defaults).text).toBe("中文正文继续正文。");
     expect(projectText(result([page([block("English text",100),block("continues here.",126)])]),defaults).text).toBe("English text continues here.");
