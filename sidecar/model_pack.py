@@ -235,7 +235,7 @@ def export_pack(directory: str, selected: Any, progress: Progress, cancel: threa
             (stage / name).mkdir(exist_ok=True)
             size, digest = hash_file(root / name / filename, cancel, stage / name / filename, copied)
             files.append({"path": f"{name}/{filename}", "size": size, "sha256": digest})
-        manifest = {"schema": PACK_SCHEMA, "appVersion": "0.12.0", "runtime": RUNTIME, "capabilities": items, "files": files}
+        manifest = {"schema": PACK_SCHEMA, "appVersion": "0.12.1", "runtime": RUNTIME, "capabilities": items, "files": files}
         (stage / "model-pack.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
         (stage / "使用说明.txt").write_text(
             "本地 OCR 离线模型包\n\n1. 将本文件夹完整复制到离线电脑，同时携带对应系统的软件安装包/AppImage。\n"

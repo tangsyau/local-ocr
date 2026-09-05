@@ -8,6 +8,66 @@ const page=(blocks:OcrBlock[],index=0):OcrPage=>({schemaVersion:1,pageIndex:inde
 const result=(pages:OcrPage[])=>finalizeResult({resultType:"text"},pages);
 
 describe("language-aware text projection",()=>{
+  it.each([
+    ['1.我们几乎不会说一个完全没有历史知识的人是“受过教育”的，', '1．我们几乎不会说一个完全没有历史知识的人是“受过教育”的，'],
+    ['2. 下一项\n3.14 是小数\n1.2.3 版本', '2． 下一项\n3.14 是小数\n1.2.3 版本'],
+    ['中文...继续', '中文……继续'],
+    ['说明(English)', '说明（English）'],
+    ['日本語 ( テスト )', '日本語（テスト）'],
+    ['Hello（world）！', 'Hello(world)!'],
+    ['时间9：00，数值3．14', '时间9:00，数值3.14'],
+    ['说明https://例子.com/a?x=1，邮箱 a@example.com', '说明https://例子.com/a?x=1，邮箱 a@example.com'],
+    ['文档说明.pdf，版本v1.2', '文档说明.pdf，版本v1.2'],
+    ['a   b   c   d', 'a b c d'],
+    ['漢 字 と仮名', '漢字と仮名'],
+    ['かな の あいだ', 'かな の あいだ'],
+    ['甲\n  新段落\n \t\n\n乙', '甲\n  新段落\n\n乙'],
+    ['`print( 中文 , 1.2 )`', '`print( 中文 , 1.2 )`'],
+    ['```\n中文 ,  x   y\n\n\n```', '```\n中文 ,  x   y\n\n\n```'],
+  ])('normalizes safely and idempotently: %s', (input, expected) => {
+    expect(normalizeSmartText(input)).toBe(expected);
+    expect(normalizeSmartText(expected)).toBe(expected);
+  });
+  it('joins the reported short continuation while preserving the following paragraph', () => {
+    const first='2是我们的思想家、我们的艺术家和将军们造就了我们的时代，无论是好';
+    const rest=['今天，没有人会认为阅读莎士比亚的作品，或沉思米开朗基罗的创',
+      '作是浪费时间，因为它们自身具有内在价值，不会因为其作者的死亡和我',
+      '们时代之间已然逝去的年岁而减损。同样，我们也不会认为研究柏拉图、',
+      '亚里士多德或奥古斯丁是浪费韶光，因为他们的思想创作作为人类精神的',
+      '卓越成就而永存。自鲁本斯时代以来，很多艺术家都在生活与创作，但是',
+      '这并未减损鲁本斯作品的价值。自柏拉图的时代以来，很多思想家都做哲',
+      '学研究，但都未摧毁柏拉图哲学的兴味与美妙。'];
+    for (const change of [{fontSize:16}, {box:[40,126,100,146]}, {box:[20,145,80,165]}]) {
+      const r=result([page([block(first,100,20,600), {...block('是坏。',126,20,60),...change},
+        ...rest.map((s,i)=>block(s,180+i*26,20,600))])]);
+      expect(projectText(r,defaults).text).toBe(first+'是坏。\n\n'+rest.join(''));
+    }
+  });
+  it('preserves fullwidth numbered lists, headings, separate columns and distant paragraphs', () => {
+    const first='这是一段尚未结束的长句，应该结合版面判断是否连接';
+    for (const next of [block('2．我们开始下一项',126), block('第二章 新章',126),
+      block('另一栏正文',126,500,400), block('独立段落',250), {...block('大标题',126),fontSize:32}]) {
+      expect(projectText(result([page([block(first),next])]),defaults).text).toContain('\n\n');
+    }
+    expect(projectText(result([page([block('1.我们是第一项'),block('2.我们是第二项',126)])]),defaults).text)
+      .toBe('1．我们是第一项\n\n2．我们是第二项');
+  });
+  it('normalizes once before Ruby rendering, preserving offsets, readings and source data', () => {
+    const b={...block('𠮷... 薔 薇,中文'),ruby:[{start:5,end:8,text:'ばら<>&'}]};
+    const r=result([page([b])]), before=JSON.stringify(r);
+    const plain=projectText(r,defaults);
+    const ruby=projectText(r,{...defaults,rubyFormat:'ruby'});
+    expect(ruby.html).toContain('<ruby>薔薇<rt>ばら&lt;&gt;&amp;</rt></ruby>，中文');
+    expect(plain.text).toBe(ruby.text);
+    expect(ruby.text).toContain('薔薇（ばら<>&），中文');
+    expect(JSON.stringify(r)).toBe(before);
+  });
+  it('leaves table-mode text and coordinate-free legacy pages intact', () => {
+    const p=page([block('表 格 , 内容\n\n\n1.说明')]);
+    const r=result([p]);
+    expect(projectText({...r,resultType:'table'},defaults).text).toBe(r.text);
+    expect(projectText(result([{...p,schemaVersion:undefined}]),defaults).text).toBe(p.text);
+  });
   it("normalizes multilingual punctuation, OCR spaces and blank lines conservatively",()=>{
     expect(normalizeSmartText("中文 , 测试 !\n\n\nEnglish   text 2.5\n日本語 ( テスト )")).toBe("中文，测试！\n\nEnglish text 2.5\n日本語（テスト）");
     expect(normalizeSmartText("网址 https://example.com/a,b，邮箱 a@example.com")).toBe("网址 https://example.com/a,b，邮箱 a@example.com");
