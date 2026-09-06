@@ -61,6 +61,8 @@ export interface OcrResult {
   elapsedMs: number;
   pages: OcrPage[];
   tables: OcrTable[];
+  /** Number of pages covered by the manually corrected prefix in text. */
+  editedPageCount?: number;
   /** True while pages are still arriving; merged tables are finalized once. */
   partial?: boolean;
   completedPageCount?: number;

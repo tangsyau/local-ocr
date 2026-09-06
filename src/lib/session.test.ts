@@ -60,3 +60,11 @@ describe("local session recovery", () => {
     expect(restored).not.toHaveProperty("autoRun");
   });
 });
+
+it("restores a corrected prefix and leaves later pages available for formatting", async()=>{
+  const {projectText,defaultTextSettings}=await import('./text-processing');
+  const pages=[{pageIndex:0,text:'原文',blocks:[],tables:[]},{pageIndex:1,text:'后续页面',blocks:[],tables:[]}];
+  const saved={schema:2,selectedTaskId:'a',settings:defaultSettings,tasks:[{id:'a',path:'/a.pdf',fileName:'a.pdf',status:'running',textEdited:true,resultType:'text',result:{text:'手动校对',editedPageCount:1,tables:[],pages:[],totalPageCount:3,selectedPageCount:3}}]};
+  const restored=restoreSession(saved,new Map([['a',pages]]));
+  expect(projectText(restored!.tasks[0].result!,defaultTextSettings,true).text).toBe('手动校对\n\n后续页面');
+});

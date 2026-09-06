@@ -151,6 +151,24 @@ try {
       assert.ok(scrollInfo.top > 0);
       assert.equal(scrollInfo.bodyScrollbar,"none");
       assert.notEqual(scrollInfo.headerPosition,"sticky");
+      const fixedBar = await page.evaluate(() => {
+        const scroller = document.querySelector('.table-results');
+        const control = document.querySelector('.table-top-scroll');
+        const before = control.getBoundingClientRect().top;
+        scroller.scrollTop = 500;
+        scroller.dispatchEvent(new Event('scroll'));
+        control.scrollLeft = control.scrollWidth - control.clientWidth;
+        control.dispatchEvent(new Event('scroll'));
+        const body = document.querySelector('.table-scroll');
+        return { before, after: control.getBoundingClientRect().top,
+          outside: !scroller.contains(control),
+          count: document.querySelectorAll('.table-top-scroll').length,
+          reachesEnd: Math.abs(body.scrollLeft - (body.scrollWidth - body.clientWidth)) <= 2 };
+      });
+      assert.equal(fixedBar.count,1,'only one persistent horizontal control');
+      assert.ok(fixedBar.outside,'horizontal control is outside vertical reading area');
+      assert.equal(fixedBar.before,fixedBar.after,'control must remain visible midway down a tall table');
+      assert.ok(fixedBar.reachesEnd,'the control must reach the final column despite viewport padding');
       await page.getByRole("button", {name:"进入专注模式",exact:true}).click();
       const focusFits = await page.locator(".result-panel").evaluate((element)=>element.getBoundingClientRect().bottom <= innerHeight + 2);
       assert.ok(focusFits, "focus mode exceeds viewport");

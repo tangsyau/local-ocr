@@ -16,6 +16,8 @@ export interface AppSettings {
   localModelsOnly?: boolean;
   textSettings?: TextSettings;
   rawTextView?: boolean;
+  exportTextVersion?: "original" | "formatted";
+  exportScope?: "all" | "current" | "checked";
 }
 
 export interface SavedSession {
@@ -88,6 +90,8 @@ export function restoreSession(value: unknown, storedPages: Map<string, OcrPage[
     exportSuffix: String(input.exportSuffix || "").slice(0, 100),
     exportName: String(input.exportName || defaultSettings.exportName).slice(0, 100),
     localModelsOnly: input.localModelsOnly === true,
+    exportTextVersion: input.exportTextVersion === "original" ? "original" : "formatted",
+    exportScope: "all", // Selection is transient; restore to the explicit all-results scope.
     textSettings: normalizeTextSettings(input.textSettings), rawTextView: input.rawTextView === true
   };
   return {

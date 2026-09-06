@@ -2,6 +2,7 @@
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App.vue";
+import {SidecarRequestError} from "./lib/sidecar";
 import type { OcrResult } from "./lib/types";
 import { defaultSettings } from "./lib/session";
 
@@ -310,5 +311,130 @@ describe("batch and recovery interactions", () => {
     mock.jobs[1].resolve({ ...result("", false), path: "/document.pdf", pageCount: 0, totalPageCount: 10,
       selectedPageCount: 10, completedPageCount: 1, elapsedMs: 1, pages: [] });
     await flushPromises();
+  });
+});
+
+describe("0.13 state and output regressions", () => {
+  function savedTasks() {
+    const r = result("第一行\n继续正文");
+    r.pages[0] = {...r.pages[0],schemaVersion:1,rawText:r.text,source:"ocr",width:600,height:800,
+      blocks:[{text:"第一行",box:[20,100,420,120],polygon:[],fontSize:20,score:.9},
+        {text:"继续正文",box:[20,126,420,146],polygon:[],fontSize:20,score:.9}]};
+    mock.load.mockResolvedValue({schema:2,selectedTaskId:"a",settings:defaultSettings,tasks:[
+      {id:"a",path:"/a.pdf",fileName:"a.pdf",batchId:"a",batchIndex:0,status:"completed",resultType:"text",result:r,revision:1,exportedRevision:1},
+      {id:"b",path:"/b.pdf",fileName:"b.pdf",batchId:"b",batchIndex:0,status:"completed",resultType:"text",result:result("第二文件"),revision:1,exportedRevision:1}]});
+    const original=mock.request.getMockImplementation()!;
+    mock.request.mockImplementation((method, params, event) => method === "export_preview"
+      ? Promise.resolve({count:1,skipped:0,overwrites:0,noTableCount:1,files:[{name:"a.txt",action:"write"}]})
+      : method === "export_results" ? Promise.resolve({count:1,skipped:0,exportedIds:params.textItems.map((t:any)=>t.id)}) : original(method,params,event));
+    return r;
+  }
+  it("blocks recognition rather than silently using the old range after invalid input", async()=>{
+    const original=mock.request.getMockImplementation()!;
+    mock.request.mockImplementation((method, params, event)=>method === "document_info" && params.pageRange === "bad"
+      ? Promise.reject(Error("页码无效")) : original(method,params,event));
+    wrapper=mount(App);await flushPromises();mock.dropped!(["/book.pdf"]);await flushPromises();
+    await wrapper.find('[aria-label="指定 PDF 页码"]').setValue("bad");await flushPromises();
+    await button("开始批量").trigger("click");await flushPromises();
+    expect(mock.jobs).toHaveLength(0);expect(wrapper.find('[role="alert"]').text()).toContain("页码无效");
+  });
+  it("waits for blur validation when Start is clicked immediately", async()=>{
+    const original=mock.request.getMockImplementation()!;
+    let done:(value:any)=>void=()=>{};let held=false;
+    mock.request.mockImplementation((method,params,event)=>{
+      if(method === "document_info" && params.pageRange === "2" && !held){held=true;return new Promise(resolve=>done=resolve);}
+      return original(method,params,event);
+    });
+    wrapper=mount(App);await flushPromises();mock.dropped!(["/book.pdf"]);await flushPromises();
+    await wrapper.find('[aria-label="指定 PDF 页码"]').setValue("2");
+    await button("开始批量").trigger("click");expect(mock.jobs).toHaveLength(0);
+    done({totalPageCount:10,selectedPageCount:1,sourceSize:100,sourceMtimeNs:"200"});await flushPromises();
+    expect(mock.request.mock.calls.find(c=>c[0]==="recognize")?.[1].pageRange).toBe("2");
+  });
+  it("does not expose Continue until the backend confirms pause",async()=>{
+    wrapper=mount(App);await flushPromises();await button("添加图片").trigger("click");await button("开始批量").trigger("click");await flushPromises();
+    await button("暂停").trigger("click");await flushPromises();
+    expect(button("正在暂停").attributes("disabled")).toBeDefined();
+    expect(wrapper.findAll("button").some(b=>b.text()==="继续")).toBe(false);
+    mock.jobs[0].onEvent!({event:"paused"});await flushPromises();await button("继续").trigger("click");await flushPromises();
+    expect(mock.request.mock.calls.some(c=>c[0]==="resume")).toBe(true);
+    mock.jobs[0].onEvent!({event:"resumed"});await flushPromises();expect(button("暂停").attributes("disabled")).toBeUndefined();
+  });
+  it("exports the explicit formatted version even while original text is being viewed",async()=>{
+    savedTasks();wrapper=mount(App);await flushPromises();await button("整理前").trigger("click");
+    mock.open.mockResolvedValue("/output");await button("导出所选格式").trigger("click");await flushPromises();
+    const payload=mock.request.mock.calls.find(c=>c[0]==="export_preview")?.[1];
+    expect(payload.textItems[0].text).toBe("第一行继续正文");
+    expect(payload.textItems).toHaveLength(2);
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("整理后"));
+  });
+  it("exports only checked tasks and allows an independent original export",async()=>{
+    savedTasks();wrapper=mount(App);await flushPromises();
+    await wrapper.find('[aria-label="导出范围"]').setValue("checked");
+    await wrapper.find('[aria-label="导出文本版本"]').setValue("original");
+    await wrapper.findAll('.task-check')[0].setValue(true);
+    mock.open.mockResolvedValue("/output");await button("导出所选格式").trigger("click");await flushPromises();
+    const payload=mock.request.mock.calls.find(c=>c[0]==="export_preview")?.[1];
+    expect(payload.textItems.map((t:any)=>t.id)).toEqual(["a"]);
+    expect(payload.textItems[0].text).toBe("第一行\n继续正文");
+  });
+  it("does not mark results changed just by switching view",async()=>{
+    savedTasks();wrapper=mount(App);await flushPromises();await button("整理前").trigger("click");
+    await new Promise(r=>setTimeout(r,450));await flushPromises();
+    // If startup generated a save, it must retain the original revision.
+    for(const call of mock.save.mock.calls) expect(call[0].tasks[0].revision).toBe(1);
+  });
+  it("focus mode has two copy buttons and a working ruby preview",async()=>{
+    const r=savedTasks();r.pages[0].blocks[0].ruby=[{start:0,end:2,text:"よみ"}];
+    wrapper=mount(App);await flushPromises();await wrapper.find('[aria-label="识别日语注音"]').setValue(true);await wrapper.find('[aria-label="注音输出"]').setValue("ruby");
+    await wrapper.find('[aria-label="进入专注模式"]').trigger("click");
+    expect(wrapper.findAll('button').filter(b=>b.text()==="复制全文")).toHaveLength(2);
+    expect(wrapper.find('[aria-label="整理后注音预览"] ruby').exists()).toBe(true);
+    await wrapper.find('.text-result-tools input[type="checkbox"]').setValue(false);
+    expect(wrapper.find('[aria-label="整理后文本"]').exists()).toBe(true);
+    expect(wrapper.find('.focus-save').exists()).toBe(true);
+  });
+  it("reports clipboard failures near the result instead of rejecting silently",async()=>{
+    savedTasks();wrapper=mount(App);await flushPromises();
+    Object.defineProperty(navigator,"clipboard",{configurable:true,value:{writeText:vi.fn(async()=>{throw Error('denied')})}});
+    await button("复制全文").trigger("click");await flushPromises();expect(wrapper.find('.action-feedback').text()).toContain("复制失败");
+  });
+  it("starts auto PDF extraction without preparing models",async()=>{
+    wrapper=mount(App);await flushPromises();mock.dropped!(["/book.pdf"]);await flushPromises();
+    await button("开始批量").trigger("click");await flushPromises();
+    expect(mock.jobs).toHaveLength(1);expect(mock.request.mock.calls.some(c=>c[0]==="prepare")).toBe(false);
+  });
+  it("keeps corrected text and formats later incoming pages",async()=>{
+    const r=savedTasks();mock.load.mockResolvedValue(null);wrapper=mount(App);await flushPromises();mock.dropped!(["/book.pdf"]);await flushPromises();
+    await button("开始批量").trigger("click");await flushPromises();
+    mock.jobs[0].onEvent!({event:"page_result",pageResult:r.pages[0],pageCount:10});await flushPromises();
+    await wrapper.find('[aria-label="识别文本"]').setValue("已校对的第一页");
+    mock.jobs[0].onEvent!({event:"page_result",pageResult:{...r.pages[0],pageIndex:1},pageCount:10});await flushPromises();
+    expect(wrapper.find<HTMLTextAreaElement>('[aria-label="识别文本"]').element.value).toBe("已校对的第一页\n\n第一行继续正文");
+    mock.jobs[0].resolve({...r,pageCount:2,pages:[r.pages[0],{...r.pages[0],pageIndex:1}]});await flushPromises();
+    expect(wrapper.find<HTMLTextAreaElement>('[aria-label="识别文本"]').element.value).toContain("已校对的第一页\n\n第一行继续正文");
+  });
+});
+
+describe("0.13 lazy model handoff",()=>{
+  it("prepares on model-required and resumes after previously extracted pages",async()=>{
+    wrapper=mount(App);await flushPromises();mock.dropped!(["/mixed.pdf"]);await flushPromises();
+    await button("开始批量").trigger("click");await flushPromises();
+    mock.jobs[0].onEvent!({event:"page_result",pageResult:{pageIndex:0,text:"文本页",blocks:[],tables:[],source:"pdf-text"},pageCount:10});await flushPromises();
+    mock.jobs[0].reject(Object.assign(new SidecarRequestError("需要模型"),{category:"model_required"}));await flushPromises();
+    expect(mock.request.mock.calls.filter(c=>c[0]==="prepare")).toHaveLength(1);
+    expect(mock.jobs).toHaveLength(2);
+    expect(mock.request.mock.calls.filter(c=>c[0]==="recognize")[1][1].completedPages).toEqual([0]);
+    expect(wrapper.find<HTMLTextAreaElement>('[aria-label="识别文本"]').element.value).toBe("文本页");
+  });
+  it("stops ordinary preparation without closing the application",async()=>{
+    let rejectPrepare:(error:Error)=>void=()=>{};
+    const original=mock.request.getMockImplementation()!;
+    mock.request.mockImplementation((method,params,event)=>method==="prepare"?new Promise((_,reject)=>rejectPrepare=reject):original(method,params,event));
+    mock.forceStop.mockImplementation(async()=>{mock.running=false;rejectPrepare(Error("terminated"))});
+    wrapper=mount(App);await flushPromises();await button("准备当前模型").trigger("click");await flushPromises();
+    await button("停止准备模型").trigger("click");await flushPromises();
+    expect(mock.forceStop).toHaveBeenCalledOnce();expect(wrapper.find('.action-feedback').text()).toContain("已停止");
+    expect(button("启动并准备模型").attributes("disabled")).toBeUndefined();
   });
 });

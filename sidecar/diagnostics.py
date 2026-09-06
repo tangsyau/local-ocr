@@ -19,6 +19,8 @@ CATEGORIES = {"ok", "download", "model", "runtime", "file", "storage", "unknown"
 
 
 def error_category(error: Exception) -> str:
+    if type(error).__name__ == "ModelRequiredError":
+        return "model_required"
     if type(error).__name__ == "LocalModelsMissingError":
         return "model"
     value = str(error).lower()
@@ -68,7 +70,7 @@ def record_event(method: str, category: str = "ok") -> None:
 def safe_report(info: dict[str, Any]) -> dict[str, Any]:
     packages = info.get("packages") or {}
     return {
-        "appVersion": "0.12.1", "os": platform.system(), "osRelease": platform.release(),
+        "appVersion": "0.13.0", "os": platform.system(), "osRelease": platform.release(),
         "architecture": platform.machine(), "python": sys.version.split()[0],
         "frozen": bool(getattr(sys, "frozen", False)), "engineReady": bool(info.get("engineReady")),
         "profile": info.get("profile") if info.get("profile") in {"fast", "accurate"} else None,

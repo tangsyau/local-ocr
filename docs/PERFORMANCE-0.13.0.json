@@ -1,0 +1,35 @@
+{
+  "memoryNote": "Sampled Node process heap, not peak/native memory; includes Vue and benchmark allocations",
+  "explicitGc": true,
+  "kind": "Synthetic Vue/JS frontend; no model or native WebView benchmark",
+  "node": "v24.19.0",
+  "measurements": [
+    {
+      "pages": 100,
+      "heapBeforeMiB": 10.34,
+      "heapAfterMiB": 37.32,
+      "coldProjectionMs": 119.93,
+      "warmProjectionMs": 2.48,
+      "deepWatchMs": 42.74,
+      "headerWatchMs": 0.1
+    },
+    {
+      "pages": 500,
+      "heapBeforeMiB": 14.76,
+      "heapAfterMiB": 118.28,
+      "coldProjectionMs": 529.91,
+      "warmProjectionMs": 9.06,
+      "deepWatchMs": 263.36,
+      "headerWatchMs": 0.09
+    },
+    {
+      "pages": 1000,
+      "heapBeforeMiB": 32.23,
+      "heapAfterMiB": 210.26,
+      "coldProjectionMs": 1026.26,
+      "warmProjectionMs": 20.96,
+      "deepWatchMs": 517.36,
+      "headerWatchMs": 0.19
+    }
+  ]
+}

@@ -93,12 +93,12 @@ class ProjectConfigTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(package["version"], "0.12.1")
+        self.assertEqual(package["version"], "0.13.0")
         self.assertEqual(standard_config["version"], package["version"])
         self.assertEqual(legacy_config["package"]["version"], package["version"])
         self.assertEqual(legacy_cli_package["version"], package["version"])
-        self.assertIn('version = "0.12.1"', standard_cargo)
-        self.assertIn('version = "0.12.1"', legacy_cargo)
+        self.assertIn('version = "0.13.0"', standard_cargo)
+        self.assertIn('version = "0.13.0"', legacy_cargo)
 
     def test_model_manager_uses_aligned_columns_and_one_deletion_flow(self) -> None:
         app = (ROOT / "src" / "App.vue").read_text(encoding="utf-8")
@@ -153,7 +153,7 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertIn("scrollbar-width: none", styles)
         self.assertIn("width: max-content", styles)
         self.assertIn('aria-label="表格识别结果，可上下滚动"', table_viewer)
-        self.assertIn('aria-label="表格顶部横向滚动条"', table_viewer)
+        self.assertIn('aria-label="当前表格横向滚动条"', table_viewer)
         self.assertIn("scrollFromTop", table_viewer)
         self.assertIn("resultFocusMode", app)
         self.assertIn("退出专注模式（Esc）", app)

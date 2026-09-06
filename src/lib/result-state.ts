@@ -28,6 +28,7 @@ export function finalizeResult(value: Partial<OcrResult>, pagesValue: OcrPage[],
     : [];
   const generatedText = pages.map((page) => page.text).filter(Boolean).join("\n\n");
   return {
+    editedPageCount: textEdited ? Math.min(pages.length, value.editedPageCount ?? pages.length) : undefined,
     path: String(value.path || ""),
     profile: value.profile === "accurate" ? "accurate" : "fast",
     resultType: mode,
@@ -87,8 +88,8 @@ export function appendResultPage(result: OcrResult, page: OcrPage, keepEditedTex
   const appended = !result.pages.length || Number(result.pages[result.pages.length - 1].pageIndex) < Number(page.pageIndex);
   if (appended) result.pages.push(page);
   else result.pages.splice(result.pages.findIndex((item) => Number(item.pageIndex) > Number(page.pageIndex)), 0, page);
-  if (appended || keepEditedText) result.text = [result.text, page.text].filter(Boolean).join("\n\n");
-  else result.text = result.pages.map((item) => item.text).filter(Boolean).join("\n\n");
+  if (!keepEditedText && appended) result.text = [result.text, page.text].filter(Boolean).join("\n\n");
+  else if (!keepEditedText) result.text = result.pages.map((item) => item.text).filter(Boolean).join("\n\n");
   result.pageCount = result.pages.length;
   result.completedPageCount = result.pages.length;
   result.blockCount += page.blocks.length;

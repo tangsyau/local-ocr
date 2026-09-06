@@ -193,7 +193,15 @@ export function projectText(result: OcrResult, settings: TextSettings, edited = 
   const raw = result.pages.map(p=>p.rawText ?? p.text).join("\n\n") || result.text;
   const warnings: string[] = [];
   if (rawView) return {text:raw,html:escapeHtml(raw),raw,warnings};
-  if (edited) return {text:result.text,html:escapeHtml(result.text),raw,warnings:["显示手工校对版；整理设置不会覆盖校对内容。"]};
+  if (edited) {
+    const count = Math.min(result.pages.length, result.editedPageCount ?? result.pages.length);
+    const remaining = result.pages.slice(count);
+    const tail = remaining.length ? projectText({ ...result, text: "", pages: remaining, pageCount: remaining.length,
+      totalPageCount: remaining.length, selectedPageCount: remaining.length }, settings) : null;
+    const text = [result.text, tail?.text].filter(Boolean).join("\n\n");
+    return {text, html: [escapeHtml(result.text), tail?.html].filter(Boolean).join("\n\n"), raw,
+      warnings: ["已校对部分保持不变；后续新页继续按当前设置整理。", ...(tail?.warnings ?? [])]};
+  }
   if (result.resultType === "table") return {text:result.text,html:escapeHtml(result.text),raw,warnings};
   if (!result.pages.length) return {text:result.text,html:escapeHtml(result.text),raw,warnings};
   const pages = result.pages.map(p=>pageText(p,settings));

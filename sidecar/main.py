@@ -107,6 +107,9 @@ class SidecarServer:
         with self._worker_lock:
             if self._initializing or (self._worker is not None and self._worker.is_alive()):
                 raise RuntimeError("已有识别任务正在运行")
+            reader = getattr(self.engine, "initialize_document_reader", None)
+            if reader is not None:
+                reader()
             self.engine.reset_job_control()
             worker = threading.Thread(
                 target=self._run_recognition,
@@ -178,6 +181,7 @@ class SidecarServer:
                 completed_pages=list(params.get("completedPages") or []),
                 pdf_source=str(params.get("pdfSource") or "ocr"),
                 ruby_enabled=params.get("rubyEnabled", False),
+                expected_profile=params.get("profile"),
             )
             response = {"id": request_id, "type": "result", "result": result}
             record_event("recognize", "cancelled" if result.get("cancelled") else "ok")
@@ -316,7 +320,7 @@ class SidecarServer:
             target = os.environ.get("LOCAL_OCR_UI_SMOKE_DIR")
             if not target or not Path(target).is_dir():
                 raise ValueError("UI 测试未启用")
-            report = {"appVersion": "0.12.1", "sidecar": True,
+            report = {"appVersion": "0.13.0", "sidecar": True,
                       "width": int(params.get("width") or 0), "height": int(params.get("height") or 0),
                       "sidebarFits": bool(params.get("sidebarFits"))}
             marker = Path(target) / "ready.tmp"

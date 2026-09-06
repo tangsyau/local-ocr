@@ -187,3 +187,46 @@ class TextHtmlTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class LazyPdfModelTests(unittest.TestCase):
+    def test_text_pdf_needs_no_ocr_model_and_preserves_selected_profile(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "text.pdf"
+            create_test_pdf(path, ["A complete text page.", "Another complete text page."])
+            engine = OcrEngine()
+            completed = []
+            with patch.object(engine, "prepare", side_effect=AssertionError("must not load models")):
+                result = engine.recognize(str(path), pdf_source="auto", expected_profile="accurate",
+                    on_page=lambda page, elapsed, total, done: completed.append(page))
+            self.assertEqual(result["pageCount"], 2)
+            self.assertEqual(result["profile"], "accurate")
+            self.assertEqual([page["source"] for page in completed], ["pdf-text", "pdf-text"])
+            self.assertIsNone(engine._ocr)
+
+    def test_mixed_pdf_yields_text_checkpoint_before_requesting_model(self):
+        from engine import ModelRequiredError
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "mixed.pdf"
+            create_test_pdf(path, ["Text comes first.", ""])
+            engine = OcrEngine()
+            completed = []
+            with self.assertRaisesRegex(ModelRequiredError, "第 2 页"):
+                engine.recognize(str(path), pdf_source="auto", expected_profile="fast",
+                    on_page=lambda page, elapsed, total, done: completed.append(page))
+            self.assertEqual([page["pageIndex"] for page in completed], [0])
+            engine._ocr = SimpleNamespace(predict_iter=lambda **kwargs: iter([SimpleNamespace(json={"res":{"rec_texts":["Scanned continuation"],"rec_scores":[.99],"rec_boxes":[[0,0,150,20]]}})]))
+            engine._mode, engine._profile = "text", "fast"
+            resumed = engine.recognize(str(path), pdf_source="auto", expected_profile="fast", completed_pages=[0])
+            self.assertEqual([page["pageIndex"] for page in resumed["pages"]], [1])
+            self.assertEqual(resumed["completedPageCount"], 2)
+
+    def test_loaded_wrong_profile_is_not_used_for_raster_page(self):
+        from engine import ModelRequiredError
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "scan.pdf"
+            create_test_pdf(path, [""])
+            engine = OcrEngine()
+            engine._mode, engine._profile = "text", "fast"
+            engine._ocr = SimpleNamespace(predict_iter=lambda **kwargs: (_ for _ in ()).throw(AssertionError("wrong model")))
+            with self.assertRaises(ModelRequiredError):
+                engine.recognize(str(path), pdf_source="auto", expected_profile="accurate")

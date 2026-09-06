@@ -39,6 +39,11 @@ MODEL_PROFILES = {
 TABLE_MODEL_NAMES = ("PicoDet_layout_1x_table", "SLANet_plus")
 
 
+class ModelRequiredError(RuntimeError):
+    """A raster page needs models; completed text pages remain checkpoints."""
+    pass
+
+
 class LocalModelsMissingError(RuntimeError):
     """Missing offline files are not a failed network download."""
 
@@ -482,6 +487,11 @@ class OcrEngine:
     def mode(self) -> str | None:
         return self._mode
 
+    def initialize_document_reader(self) -> None:
+        if not getattr(self, "_document_reader_ready", False):
+            initialize_document_runtime()
+            self._document_reader_ready = True
+
     def initialize_runtime(self, progress: ProgressCallback | None = None) -> None:
         """Cold-import native dependencies before the command loop resumes stdin.
 
@@ -503,7 +513,7 @@ class OcrEngine:
             from paddleocr import PaddleOCR, TableRecognitionPipelineV2  # noqa: F401
             if progress:
                 progress("正在主线程初始化图片 / PDF 读取依赖……", None, "import_documents", None)
-            initialize_document_runtime()
+            self.initialize_document_reader()
         self._runtime_initialized = True
         if progress:
             progress("OCR 依赖导入完成，即将创建模型流水线", None, "imports_ready", None)
@@ -679,6 +689,7 @@ class OcrEngine:
         completed_pages: list[int] | None = None,
         pdf_source: str = "ocr",
         ruby_enabled: bool = False,
+        expected_profile: str | None = None,
     ) -> dict[str, Any]:
         path = Path(path_value).expanduser().resolve(strict=True)
         if not path.is_file():
@@ -689,10 +700,11 @@ class OcrEngine:
             raise ValueError("最低置信度必须在 0 到 1 之间")
         if pdf_source not in {"auto", "ocr"} or type(ruby_enabled) is not bool:
             raise ValueError("PDF 文字来源或注音设置无效")
-        if self._ocr is None:
-            raise RuntimeError("模型尚未准备，请先执行 prepare")
-        if mode != self._mode:
-            raise RuntimeError("识别模式与已载入模型不一致，请重新准备模型")
+        if mode not in {"text", "table"} or expected_profile not in {None, "fast", "accurate"}:
+            raise ValueError("识别模式或档位无效")
+        model_ready = self._ocr is not None and mode == self._mode and (expected_profile is None or expected_profile == self._profile)
+        if not model_ready and not (mode == "text" and pdf_source == "auto" and path.suffix.lower() == ".pdf"):
+            raise ModelRequiredError("此文件需要 OCR 模型，请准备模型后继续")
 
         started = time.perf_counter()
         pages: list[dict[str, Any]] = []
@@ -768,6 +780,8 @@ class OcrEngine:
                         if progress:
                             progress(f"原文第 {source_index + 1} 页：已直接提取 PDF 文本，无需 OCR", source_index + 1, "source_page", selected_count)
                     else:
+                        if not model_ready:
+                            raise ModelRequiredError(f"原文第 {source_index + 1} 页需要 OCR 模型；已提取页面已保留")
                         def predict(image):
                             results = self._ocr.predict_iter(input=image, **predict_options)
                             try:
@@ -823,7 +837,7 @@ class OcrEngine:
         tables = merge_cross_page_tables(pages) if mode == "table" else []
         return {
             "path": str(path),
-            "profile": self._profile,
+            "profile": expected_profile or self._profile or "fast",
             "resultType": mode,
             "cancelled": self._cancel_requested.is_set(),
             "text": "\n\n".join(page["text"] for page in pages if page["text"]),

@@ -27,9 +27,7 @@ const resultView = ref<"text" | "tables">("text");
 const textSettings = ref<TextSettings>({ ...defaultTextSettings });
 const rawTextView = ref(false);
 const rubyPreview = ref(true);
-const textProjection = computed(() => selectedResult.value
-  ? projectText(selectedResult.value, textSettings.value, selectedTask.value?.textEdited, rawTextView.value)
-  : { text: "", html: "", raw: "", warnings: [] });
+const textProjection = computed(() => rawTextView.value ? rawTextProjection.value : formattedTextProjection.value);
 const formattedTextProjection = computed(() => selectedResult.value
   ? projectText(selectedResult.value, textSettings.value, selectedTask.value?.textEdited, false)
   : { text: "", html: "", raw: "", warnings: [] });
@@ -47,6 +45,19 @@ const exportPrefix = ref("");
 const exportSuffix = ref("");
 const exportName = ref("批量识别结果");
 const exportBusy = ref(false);
+const exportTextVersion = ref<"original" | "formatted">("formatted");
+const exportScope = ref<"all" | "current" | "checked">("all");
+const exportScopeLabel = computed(() => ({all:"全部已有结果",current:"当前文件",checked:"勾选任务"})[exportScope.value]);
+const feedback = ref("");
+const preparationCancelled = ref(false);
+const preparationStage = ref("");
+const queueTransition = ref<"" | "pausing" | "resuming" | "cancelling">("");
+let pageValidation: Promise<boolean> | null = null;
+let feedbackTimer: ReturnType<typeof setTimeout> | null = null;
+watch(feedback, value => {
+  if (feedbackTimer) clearTimeout(feedbackTimer);
+  if (value && !/失败|错误|请先|无法/.test(value)) feedbackTimer = setTimeout(() => { feedback.value = ""; }, 5000);
+});
 const checkedTaskIds = ref<string[]>([]);
 const saveStatus = ref("正在读取上次任务……");
 const saveFailed = ref(false);
@@ -92,6 +103,9 @@ watch(selectedTaskId, () => {
   pageRangeMode.value = pageRangeDraft.value ? "custom" : "all";
   documentSettingsError.value = "";
 });
+const pageRangeDirty = computed(() => isPdf.value && (pageRangeMode.value === "custom" && !pageRangeDraft.value.trim()
+  || (pageRangeMode.value === "all" ? "" : pageRangeDraft.value.trim()) !== (selectedTask.value?.pageRange ?? "")));
+const hasRecognizedRuby = computed(() => selectedResult.value?.pages.some(page => page.rubyEnabled || page.blocks.some(block => block.ruby?.length)));
 const previewUrl = ref("");
 const previewError = ref("");
 watch(selectedPath, async (path, _, onCleanup) => {
@@ -114,8 +128,10 @@ const setupBusy = computed(() => phase.value === "starting" || phase.value === "
 const modelControlsBusy = computed(() => queueRunning.value || queueStarting.value || setupBusy.value || exportBusy.value || documentSettingsBusy.value);
 const queuedCount = computed(() => tasks.value.filter((task) => task.status === "queued").length);
 const completedCount = computed(() => tasks.value.filter((task) => task.status === "completed").length);
-const exportableTasks = computed(() => tasks.value.filter((task) => task.result && task.result.pageCount > 0));
-const hasUnexported = computed(() => exportableTasks.value.some((task) => (task.exportedRevision ?? -1) !== (task.revision ?? 0)));
+const allResultTasks = computed(() => tasks.value.filter((task) => task.result && task.result.pageCount > 0));
+const exportableTasks = computed(() => allResultTasks.value.filter(task => exportScope.value === "all"
+  || (exportScope.value === "current" ? task.id === selectedTaskId.value : checkedTaskIds.value.includes(task.id))));
+const hasUnexported = computed(() => allResultTasks.value.some((task) => (task.exportedRevision ?? -1) !== (task.revision ?? 0)));
 const failedCount = computed(() => tasks.value.filter((task) => task.status === "failed" || task.status === "cancelled").length);
 const checkedPdfCount = computed(() => tasks.value.filter((task) => checkedTaskIds.value.includes(task.id) && isPdfPath(task.path)).length);
 const saveBadgeLabel = computed(() => ({
@@ -234,20 +250,21 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", handleGlobalKeydown);
+  if (feedbackTimer) clearTimeout(feedbackTimer);
   for (const cleanup of cleanupListeners) cleanup();
   if (saveTimer) clearTimeout(saveTimer);
   void ocrSidecar.stop();
 });
 
-watch([tasks, selectedTaskId, scoreThreshold, modelProfile, recognitionMode, mergeCrossPageTables,
-  exportTxt, exportXlsx, exportHtml, exportGrouping, exportCollision, exportPrefix, exportSuffix, exportName, localModelsOnly, textSettings, rawTextView], () => {
+watch([() => sessionHeader({schema: 2, savedAt: "", selectedTaskId: "", settings: {} as AppSettings, tasks: tasks.value}).tasks, selectedTaskId, scoreThreshold, modelProfile, recognitionMode, mergeCrossPageTables,
+  exportTxt, exportXlsx, exportHtml, exportGrouping, exportCollision, exportPrefix, exportSuffix, exportName, localModelsOnly, textSettings, exportTextVersion], () => {
   if (!sessionLoaded) return;
   if (saveTimer) clearTimeout(saveTimer);
   savePhase.value = "saving";
   saveTimer = setTimeout(() => { void flushSave().catch(() => {}); }, 400);
 }, { deep: true });
 
-watch([textSettings, rawTextView], () => {
+watch([() => textSettings.value.textMode, () => textSettings.value.rubyFormat, () => textSettings.value.crossPageText, exportTextVersion, mergeCrossPageTables], () => {
   if (restoringSettings) return;
   for (const task of tasks.value) if (task.result) task.revision = (task.revision ?? 0) + 1;
 }, { deep: true });
@@ -268,7 +285,8 @@ function applySettings(settings: AppSettings): void {
   exportName.value = settings.exportName;
   localModelsOnly.value = settings.localModelsOnly === true;
   textSettings.value = normalizeTextSettings(settings.textSettings);
-  rawTextView.value = settings.rawTextView === true;
+  rawTextView.value = false;
+  exportTextVersion.value = settings.exportTextVersion ?? "formatted";
   void nextTick(() => { restoringSettings = false; });
 }
 
@@ -287,7 +305,7 @@ async function flushSave(): Promise<void> {
     settings: { profile: modelProfile.value, mode: recognitionMode.value, threshold: scoreThreshold.value,
       merge: mergeCrossPageTables.value, formats: outputFormats(), exportGrouping: exportGrouping.value,
       exportCollision: exportCollision.value, exportPrefix: exportPrefix.value, exportSuffix: exportSuffix.value, exportName: exportName.value, localModelsOnly: localModelsOnly.value,
-      textSettings: { ...textSettings.value }, rawTextView: rawTextView.value }
+      textSettings: { ...textSettings.value }, rawTextView: false, exportTextVersion: exportTextVersion.value }
   });
   const pages = [...pendingPageSaves.values()];
   const resets = [...pendingPageResets];
@@ -378,33 +396,41 @@ function isPdfPath(path: string): boolean {
   return path.toLowerCase().endsWith(".pdf");
 }
 
-async function applyPageRange(toChecked = false): Promise<void> {
-  if (modelControlsBusy.value || !selectedTask.value) return;
+async function applyPageRange(toChecked = false): Promise<boolean> {
+  if (pageValidation) { await pageValidation; if (!toChecked) return !documentSettingsError.value; }
+  if (queueRunning.value || setupBusy.value || exportBusy.value || !selectedTask.value || !isPdf.value) return false;
   const targets = toChecked ? tasks.value.filter(task => checkedTaskIds.value.includes(task.id) && isPdfPath(task.path)) : [selectedTask.value];
-  if (!targets.length) { documentSettingsError.value = "请先勾选至少一个 PDF；图片不受页码设置影响。"; return; }
+  if (!targets.length) { documentSettingsError.value = "请先勾选至少一个 PDF。"; return false; }
   const range = pageRangeMode.value === "all" ? "" : pageRangeDraft.value.trim();
-  if (pageRangeMode.value === "custom" && !range) { documentSettingsError.value = "请输入页码，例如 1,3-5,8。"; return; }
+  if (pageRangeMode.value === "custom" && !range) { documentSettingsError.value = "请输入页码，例如 1,3-5,8。"; return false; }
+  const owner = selectedTaskId.value;
   documentSettingsBusy.value = true;
   documentSettingsError.value = "";
-  try {
-    const updates = [];
-    for (const task of targets) {
-      try {
-        const info = await ocrSidecar.request<{ totalPageCount: number; selectedPageCount: number; sourceSize: number; sourceMtimeNs: string }>("document_info", { path: task.path, pageRange: range });
-        updates.push({ task, info });
-      } catch (error) { throw new Error(`${task.fileName}：${error instanceof Error ? error.message : String(error)}`); }
-    }
-    for (const { task, info } of updates) {
-      task.pageRange = range;
-      task.sourcePageCount = info.totalPageCount;
-      task.sourceSize = info.sourceSize;
-      task.sourceMtimeNs = info.sourceMtimeNs;
-      task.resumeEligible = false;
-    }
-    status.value = `已设置 ${targets.length} 个 PDF 的识别范围：${range || "全部页"}；已有结果保留，再次识别时生效。`;
-  } catch (error) {
-    documentSettingsError.value = error instanceof Error ? error.message : String(error);
-  } finally { documentSettingsBusy.value = false; }
+  pageValidation = (async () => {
+    try {
+      const updates = [];
+      for (const task of targets) {
+        try {
+          const info = await ocrSidecar.request<{ totalPageCount: number; selectedPageCount: number; sourceSize: number; sourceMtimeNs: string }>("document_info", { path: task.path, pageRange: range });
+          updates.push({ task, info });
+        } catch (error) { throw new Error(`${task.fileName}：${error instanceof Error ? error.message : error}；本次设置未应用。`); }
+      }
+      for (const { task, info } of updates) {
+        if (task.pageRange !== range) task.resumeEligible = false;
+        task.pageRange = range;
+        task.sourcePageCount = info.totalPageCount;
+        task.totalPages = info.selectedPageCount;
+        task.sourceSize = info.sourceSize;
+        task.sourceMtimeNs = info.sourceMtimeNs;
+      }
+      status.value = `已设置 ${targets.length} 个 PDF：${range || "全部页"}；已有结果保留。`;
+      return true;
+    } catch (error) {
+      if (owner === selectedTaskId.value) documentSettingsError.value = error instanceof Error ? error.message : String(error);
+      return false;
+    } finally { documentSettingsBusy.value = false; }
+  })();
+  try { return await pageValidation; } finally { pageValidation = null; }
 }
 
 function rotateImage(delta: number | null, toChecked = false): void {
@@ -560,8 +586,10 @@ async function prepareModels(): Promise<boolean> {
   return runModelPreparation();
 }
 
-async function runModelPreparation(): Promise<boolean> {
-  if (queueRunning.value || exportBusy.value || setupBusy.value) return false;
+async function runModelPreparation(inQueue = false): Promise<boolean> {
+  if ((queueRunning.value && !inQueue) || exportBusy.value || setupBusy.value) return false;
+  preparationCancelled.value = false;
+  preparationStage.value = "检查缓存与运行环境";
   const changingLoadedModel = ocrSidecar.running
     && preparedProfile.value !== null
     && (preparedProfile.value !== modelProfile.value || preparedMode.value !== recognitionMode.value);
@@ -598,6 +626,7 @@ async function runModelPreparation(): Promise<boolean> {
       { profile: modelProfile.value, mode: recognitionMode.value, reload: true, localOnly: localModelsOnly.value },
       (event) => {
         if (["imports_ready", "create_pipeline", "model"].includes(event.event)) importsFinished = true;
+        preparationStage.value = event.message ?? "正在载入模型";
         updateGlobalStatus(event);
       },
       30 * 60_000
@@ -610,11 +639,25 @@ async function runModelPreparation(): Promise<boolean> {
     return true;
   } catch (error) {
     sidecarReady.value = ocrSidecar.running;
-    showError(error);
+    if (preparationCancelled.value) {
+      phase.value = "idle";
+      status.value = "模型准备已停止；完整缓存保留，下次可重新准备。";
+    } else showError(error);
     return false;
   } finally {
     clearInterval(poll);
   }
+}
+
+async function cancelPreparation(): Promise<void> {
+  preparationCancelled.value = true;
+  if (queueRunning.value) stopRequested.value = true;
+  preparationStage.value = "正在停止识别进程；完整缓存保留";
+  await ocrSidecar.forceStop();
+  sidecarReady.value = false;
+  preparedProfile.value = null; preparedMode.value = null;
+  phase.value = "idle";
+  feedback.value = "模型准备已停止，可重新准备。";
 }
 
 function modelChanged(): void {
@@ -649,6 +692,7 @@ async function transferModels(direction: "export" | "import"): Promise<void> {
         transferMessage.value = event.message ?? transferMessage.value;
         transferPercent.value = event.event === "transfer" && event.pageCount ? Math.min(100, Math.round((event.page ?? 0) / event.pageCount * 100)) : null;
         transferCommitting.value = event.event === "commit";
+        preparationStage.value = event.message ?? "正在载入模型";
         updateGlobalStatus(event);
       }, null);
     if (result.cancelled) transferMessage.value = result.message ?? "模型迁移已取消";
@@ -741,13 +785,12 @@ async function copyDiagnostics(): Promise<void> {
     }
   }
   const diagnostics: DiagnosticInfo = {
-    appVersion: "0.12.1",
+    appVersion: "0.13.0",
     sidecarRunning: ocrSidecar.running,
     sidecarStderr: ocrSidecar.stderr ? "运行日志已省略，以免复制文档路径或识别相关输出" : "",
     ...remote
   };
-  await navigator.clipboard.writeText(JSON.stringify(diagnostics, null, 2));
-  status.value = "诊断信息已复制；其中不包含识别文字或文档内容";
+  await copyText(JSON.stringify(diagnostics, null, 2), "诊断信息");
 }
 
 async function openLogs(): Promise<void> {
@@ -787,16 +830,24 @@ function updateTaskStatus(task: OcrTask, event: SidecarEvent): void {
   if (event.pageCount !== undefined) task.totalPages = event.pageCount;
   if (event.event === "paused") {
     task.status = "paused";
+    queuePaused.value = true;
+    if (queueTransition.value !== "cancelling") queueTransition.value = "";
     phase.value = "paused";
   } else if (event.event === "resumed") {
     task.status = "running";
+    queuePaused.value = false;
+    if (queueTransition.value !== "cancelling") queueTransition.value = "";
     phase.value = "recognizing";
   }
   if (event.message) status.value = `${task.fileName}：${event.message}`;
 }
 
 async function runQueue(): Promise<void> {
-  if (modelControlsBusy.value || !queuedCount.value) return;
+  if (queueRunning.value || queueStarting.value || setupBusy.value || exportBusy.value || !queuedCount.value) return;
+  if (!ocrSidecar.running && !(await startSidecar())) return;
+  if (pageValidation) await pageValidation;
+  if (isPdf.value && !(await applyPageRange())) { feedback.value = "请先修正当前 PDF 的页码设置。"; return; }
+  if (modelControlsBusy.value) return;
   if (tasks.value.some(task => task.status === "queued" && task.result && !task.resumeEligible)
     && !window.confirm("等待任务中已有识别结果（可能包含手动校对）。重新识别将替换这些结果，是否继续？")) return;
   queueStarting.value = true;
@@ -821,7 +872,9 @@ async function runQueue(): Promise<void> {
       }
     }
     if (!queuedCount.value) { status.value = "PDF 页码或文件检查未通过，请选择失败任务查看原因并调整。"; return; }
-    if (!modelsReady.value && !(await runModelPreparation())) return;
+    const first = tasks.value.find(task => task.status === "queued");
+    const canExtractFirst = first && isPdfPath(first.path) && recognitionMode.value === "text" && textSettings.value.pdfSource === "auto";
+    if (!canExtractFirst && !modelsReady.value && !(await runModelPreparation())) return;
   } catch (error) {
     showError(error);
     return;
@@ -831,6 +884,7 @@ async function runQueue(): Promise<void> {
 
   queueRunning.value = true;
   queuePaused.value = false;
+  queueTransition.value = "";
   stopRequested.value = false;
   phase.value = "recognizing";
 
@@ -867,20 +921,23 @@ async function runQueue(): Promise<void> {
       skipRequestedTaskId = "";
       let resetQueued = false;
       const completedPages = liveResult?.pages.map((page) => Number(page.pageIndex)) ?? [];
-      status.value = `正在识别 ${completedCount.value + 1}/${tasks.value.length}：${task.fileName}`;
+      status.value = `正在识别 ${tasks.value.indexOf(task) + 1}/${tasks.value.length}：${task.fileName}`;
       if (resume) status.value += `（从 ${completedPages.length}/${task.totalPages ?? completedPages.length} 页继续）`;
 
       try {
         const result = await ocrSidecar.request<OcrResult>(
           "recognize",
-          { path: task.path, scoreThreshold: scoreThreshold.value, mode: recognitionMode.value,
+          { path: task.path, profile: modelProfile.value, scoreThreshold: scoreThreshold.value, mode: recognitionMode.value,
             pageRange: task.pageRange ?? "", rotation: task.rotation ?? 0, completedPages,
             pdfSource: textSettings.value.pdfSource, rubyEnabled: textSettings.value.rubyEnabled },
           (event) => {
             updateTaskStatus(task, event);
             if (event.pageResult) {
-              const editor = selectedTaskId.value === task.id ? document.querySelector<HTMLTextAreaElement>(".result-body textarea") : null;
-              const position = editor ? { start: editor.selectionStart, end: editor.selectionEnd, top: editor.scrollTop } : null;
+              const positions = selectedTaskId.value === task.id
+                ? Array.from(document.querySelectorAll<HTMLElement>(".result-body textarea, .ruby-text-preview")).map(element => ({ element,
+                  top: element.scrollTop, left: element.scrollLeft,
+                  start: element instanceof HTMLTextAreaElement ? element.selectionStart : null,
+                  end: element instanceof HTMLTextAreaElement ? element.selectionEnd : null })) : [];
               if (!liveResult) {
                 resetSavedPages(task.id);
                 resetQueued = true;
@@ -899,10 +956,13 @@ async function runQueue(): Promise<void> {
                 queuePageSave(task.id, event.pageResult);
                 task.revision = (task.revision ?? 0) + 1;
               }
-              if (editor && position) void nextTick(() => {
-                if (selectedTaskId.value !== task.id || !editor.isConnected) return;
-                editor.setSelectionRange(position.start, position.end);
-                editor.scrollTop = position.top;
+              if (positions.length) void nextTick(() => {
+                if (selectedTaskId.value !== task.id) return;
+                for (const position of positions) {
+                  if (!position.element.isConnected) continue;
+                  if (position.element instanceof HTMLTextAreaElement && position.start !== null) position.element.setSelectionRange(position.start, position.end);
+                  position.element.scrollTop = position.top; position.element.scrollLeft = position.left;
+                }
               });
             }
           },
@@ -932,6 +992,22 @@ async function runQueue(): Promise<void> {
           && task.result.pageCount < (task.result.selectedPageCount ?? task.result.totalPageCount));
         if (skipRequestedTaskId === task.id) task.error = "已跳过此文件；已完成页面的部分结果已保留";
       } catch (error) {
+        if (error instanceof SidecarRequestError && error.category === "model_required" && !stopRequested.value) {
+          if (!liveResult?.pages.length && previousResult) { task.result = previousResult; task.textEdited = previousTextEdited; }
+          task.resumeEligible = Boolean(liveResult?.pages.length);
+          await flushSave().catch(() => {});
+          status.value = `${task.fileName}：后续页面需要 OCR 模型，已完成页保留。`;
+          if (await runModelPreparation(true)) {
+            task.status = "queued";
+            phase.value = "recognizing";
+            activeTaskId = "";
+            continue;
+          }
+          task.status = preparationCancelled.value ? "cancelled" : "failed";
+          task.error = preparationCancelled.value ? "已停止准备模型；已完成页面保留" : status.value;
+          stopRequested.value = true;
+          break;
+        }
         if (!liveResult?.pages.length && previousResult) {
           task.result = previousResult;
           task.textEdited = previousTextEdited;
@@ -950,6 +1026,7 @@ async function runQueue(): Promise<void> {
       }
       activeTaskId = "";
 
+      if (String(queueTransition.value) === "pausing") queuePaused.value = true;
       if (queuePaused.value) break;
     }
 
@@ -965,6 +1042,7 @@ async function runQueue(): Promise<void> {
   } finally {
     activeTaskId = "";
     queueRunning.value = false;
+    queueTransition.value = "";
     if (String(phase.value) !== "error") phase.value = queuePaused.value ? "paused" : "idle";
     await flushSave().catch(() => {});
   }
@@ -981,9 +1059,8 @@ async function skipCurrentTask(): Promise<void> {
 }
 
 async function pauseQueue(): Promise<void> {
-  if (!queueRunning.value) return;
-  queuePaused.value = true;
-  phase.value = "paused";
+  if (!queueRunning.value || queueTransition.value) return;
+  queueTransition.value = "pausing";
   status.value = "正在请求暂停，将在当前页完成后暂停……";
   try {
     await ocrSidecar.request("pause", {}, undefined, 10_000);
@@ -993,8 +1070,8 @@ async function pauseQueue(): Promise<void> {
 }
 
 async function resumeQueue(): Promise<void> {
-  if (!queuePaused.value) return;
-  queuePaused.value = false;
+  if (!queuePaused.value || queueTransition.value) return;
+  queueTransition.value = "resuming";
   const pausedTask = tasks.value.find((task) => task.status === "paused");
   if (pausedTask && queueRunning.value) {
     pausedTask.status = "running";
@@ -1006,11 +1083,14 @@ async function resumeQueue(): Promise<void> {
       showError(error);
     }
   } else {
+    queuePaused.value = false;
+    queueTransition.value = "";
     void runQueue();
   }
 }
 
 async function cancelQueue(): Promise<void> {
+  queueTransition.value = "cancelling";
   stopRequested.value = true;
   queuePaused.value = false;
   for (const task of tasks.value) {
@@ -1070,14 +1150,15 @@ function tableExportItems(): TableExportItem[] {
     const batchTasks = tasks.value
       .filter((item) => item.batchId === task.batchId && !isPdfPath(item.path))
       .sort((left, right) => left.batchIndex - right.batchIndex);
+    const included = new Set(exportableTasks.value.map(item => item.id));
     const tables = batchTasks.length > 1
-      ? imageBatchTables(batchTasks.map((item) => item.result ?? null), mergeCrossPageTables.value)
+      ? imageBatchTables(batchTasks.map((item) => included.has(item.id) ? item.result ?? null : null), mergeCrossPageTables.value)
       : displayTables(task.result ?? null, mergeCrossPageTables.value);
     if (tables.length) {
       items.push({
-        fileName: batchTasks.length > 1 ? imageBatchExportName(batchTasks[0]) : task.fileName,
+        fileName: batchTasks.filter(item => included.has(item.id)).length > 1 ? imageBatchExportName(batchTasks.find(item => included.has(item.id))!) : task.fileName,
         tables,
-        ids: batchTasks.filter((item) => (item.result?.rawTableCount ?? 0) > 0).map((item) => item.id),
+        ids: batchTasks.filter((item) => included.has(item.id) && (item.result?.rawTableCount ?? 0) > 0).map((item) => item.id),
         profile: task.result!.profile, mode: task.resultType
       });
     }
@@ -1096,7 +1177,7 @@ async function exportSelectedFormats(): Promise<void> {
     const payload = JSON.parse(JSON.stringify({
       directory, formats: outputFormats(),
       textItems: exportableTasks.value.map((task) => {
-        const output = projectText(task.result!, textSettings.value, task.textEdited, rawTextView.value);
+        const output = projectText(task.result!, textSettings.value, task.textEdited, exportTextVersion.value === "original");
         return { id: task.id, fileName: task.fileName, text: output.text, html: output.html,
           profile: task.result?.profile, mode: task.resultType };
       }),
@@ -1108,13 +1189,14 @@ async function exportSelectedFormats(): Promise<void> {
       files: Array<{ name: string; action: string }> }>("export_preview", payload);
     if (!preview.count) { status.value = `没有需要写入的文件（同名跳过 ${preview.skipped} 个）；未识别到表格的任务不会生成 XLSX。`; return; }
     const filenames = preview.files.filter((file) => file.action !== "skip").slice(0, 12).map((file) => file.name).join("\n");
-    if (!window.confirm(`将生成 ${preview.count} 个文件，覆盖 ${preview.overwrites} 个，跳过 ${preview.skipped} 个。\n${preview.noTableCount} 个任务没有表格，不会生成 XLSX；文字模式支持 HTML。\n\n${filenames}${preview.count > 12 ? "\n……" : ""}\n\n是否导出？`)) return;
+    if (!window.confirm(`导出范围：${exportScopeLabel.value}（${exportableTasks.value.length} 个任务，包含部分完成结果）\n文本版本：${exportTextVersion.value === "original" ? "整理前" : "整理后（保留手动校对）"}\n格式：${outputFormats().join("、")}\n表格：${mergeCrossPageTables.value ? "合并连续页" : "按页拆分"}\n\n将生成 ${preview.count} 个文件，覆盖 ${preview.overwrites} 个，跳过 ${preview.skipped} 个。\n${preview.noTableCount} 个任务没有表格，不会生成 XLSX；文字模式支持 HTML。\n\n${filenames}${preview.count > 12 ? "\n……" : ""}\n\n是否导出？`)) return;
     const response = await ocrSidecar.request<{ count: number; skipped: number; exportedIds: string[] }>(
       "export_results", payload, undefined, null
     );
     for (const task of tasks.value) if (response.exportedIds.includes(task.id) && revisions.get(task.id) === (task.revision ?? 0)) {
       task.exportedRevision = task.revision ?? 0;
     }
+    feedback.value = `已导出 ${response.count} 个文件：${directory}`;
     status.value = `已导出 ${response.count} 个文件，跳过 ${response.skipped} 个；位置：${directory}`;
     await flushSave().catch(() => {});
   } catch (error) {
@@ -1126,8 +1208,11 @@ async function exportSelectedFormats(): Promise<void> {
 
 async function copyText(value: string, label = "识别文本"): Promise<void> {
   if (!value) return;
-  await navigator.clipboard.writeText(value);
-  status.value = `${fileName.value} 的${label}已复制到剪贴板`;
+  try {
+    await navigator.clipboard.writeText(value);
+    feedback.value = `${label}已复制`;
+    status.value = `${fileName.value} 的${label}已复制到剪贴板`;
+  } catch { feedback.value = "复制失败，请选中文本后使用系统复制操作。"; }
 }
 
 async function copyCurrentResult(): Promise<void> {
@@ -1135,8 +1220,7 @@ async function copyCurrentResult(): Promise<void> {
   if (resultView.value === "tables") {
     if (!selectedTables.value.length) return;
     const tsv = selectedTables.value.map(tableToTsv).filter(Boolean).join("\n\n");
-    await navigator.clipboard.writeText(tsv);
-    status.value = `已复制 ${selectedTables.value.length} 个表格的制表符文本，可直接粘贴到 Excel`;
+    await copyText(tsv, `${selectedTables.value.length} 个表格（TSV）`);
     return;
   }
   await copyText(textProjection.value.text);
@@ -1145,6 +1229,7 @@ async function copyCurrentResult(): Promise<void> {
 function updateSelectedText(event: Event): void {
   if (selectedTask.value?.result) {
     selectedTask.value.result.text = (event.target as HTMLTextAreaElement).value;
+    selectedTask.value.result.editedPageCount = selectedTask.value.result.pages.length;
     selectedTask.value.textEdited = true;
     selectedTask.value.revision = (selectedTask.value.revision ?? 0) + 1;
   }
@@ -1154,11 +1239,14 @@ function discardTextEdits(): void {
   const task = selectedTask.value;
   if (!task?.result || !window.confirm("放弃当前手工校对内容，恢复由原始识别数据生成的文本？")) return;
   task.textEdited = false;
+  task.result.editedPageCount = undefined;
   task.result.text = task.result.pages.map(p=>p.text).join("\n\n");
   task.revision = (task.revision ?? 0) + 1;
 }
 
 function showError(error: unknown): void {
+  queueTransition.value = "";
+  feedback.value = error instanceof Error ? error.message : String(error);
   phase.value = "error";
   errorSummary.value = error instanceof Error ? error.message : String(error);
   errorDetails.value = error instanceof SidecarRequestError
@@ -1220,8 +1308,10 @@ function showError(error: unknown): void {
           </button>
           <div v-if="phase === 'preparing'" class="model-progress">
             <progress aria-label="正在下载或载入模型"></progress>
+            <small>{{ preparationStage }}</small><button class="secondary-button" :disabled="preparationCancelled" @click="cancelPreparation">停止准备模型</button>
             <small>正在下载或载入；已缓存 {{ formatBytes(modelCache?.sizeBytes ?? 0) }}。下载源未提供总量时不显示百分比。</small>
           </div>
+          <p v-if="phase === 'error' && sidecarReady && errorSummary" class="error-help" role="alert">{{ errorSummary }}</p>
           <div class="model-managers">
           <details class="model-manager">
             <summary>模型管理</summary>
@@ -1287,10 +1377,10 @@ function showError(error: unknown): void {
             <button :disabled="!checkedTaskIds.length || queueRunning || exportBusy" @click="retryTasks(true)">重试勾选</button>
             <button :disabled="!failedCount || queueRunning || exportBusy" @click="retryTasks()">重试失败项</button>
           </div>
-          <div v-if="tasks.length" class="task-list">
-            <div v-for="task in tasks" :key="task.id" :class="['task-item', task.status, { selected: task.id === selectedTaskId }]" role="button" tabindex="0" @click="selectedTaskId = task.id" @keydown.enter="selectedTaskId = task.id">
+          <div v-if="tasks.length" class="task-list" aria-label="批量任务列表">
+            <div v-for="task in tasks" :key="task.id" :class="['task-item', task.status, { selected: task.id === selectedTaskId }]" role="group" :aria-label="task.fileName" :aria-current="task.id === selectedTaskId ? 'true' : undefined" @click="selectedTaskId = task.id">
               <input v-model="checkedTaskIds" class="task-check" type="checkbox" :value="task.id" :aria-label="`勾选 ${task.fileName}`" @click.stop @keydown.stop />
-              <div class="task-main">
+              <button class="task-main" type="button" :aria-pressed="task.id === selectedTaskId" @click.stop="selectedTaskId = task.id">
                 <span class="task-name" :title="task.path">{{ task.fileName }}</span>
                 <small v-if="task.missing" class="missing-file">原文件不可访问，已存结果仍可导出</small>
                 <small v-if="task.pageRange">原文页码：{{ task.pageRange }}</small>
@@ -1300,15 +1390,15 @@ function showError(error: unknown): void {
                   <template v-else>已完成 {{ task.currentPage ?? 0 }}/{{ task.totalPages }} 页</template>
                   <span v-if="task.status === 'running' || task.status === 'paused'"> · {{ Math.round(((task.currentPage ?? 0) / task.totalPages) * 100) }}%</span>
                 </small>
-              </div>
+              </button>
               <span class="task-status">{{ statusLabels[task.status] }}</span>
-              <div class="task-actions">
+              <div class="task-actions" @keydown.stop>
                 <button :disabled="queueRunning || exportBusy || tasks[0]?.id === task.id" aria-label="上移任务" @click.stop="moveTask(task, -1)">上移</button>
                 <button :disabled="queueRunning || exportBusy || tasks[tasks.length - 1]?.id === task.id" aria-label="下移任务" @click.stop="moveTask(task, 1)">下移</button>
                 <button v-if="task.status === 'failed' || task.status === 'cancelled'" :disabled="exportBusy" @click.stop="retryTask(task)">重试</button>
                 <button v-if="task.status !== 'running' && task.status !== 'paused'" :disabled="exportBusy" @click.stop="removeTask(task)">移除</button>
               </div>
-              <progress v-if="task.totalPages && (task.status === 'running' || task.status === 'paused')" class="task-progress" :value="task.currentPage ?? 0" :max="task.totalPages"></progress>
+              <progress v-if="task.totalPages && (task.status === 'running' || task.status === 'paused')" :aria-label="`${task.fileName} 识别进度`" class="task-progress" :value="task.currentPage ?? 0" :max="task.totalPages"></progress>
             </div>
           </div>
           <p v-else class="queue-empty">支持多选或拖入文件，按队列顺序识别。</p>
@@ -1317,6 +1407,7 @@ function showError(error: unknown): void {
         <div class="step-card settings-card">
           <div class="step-heading"><b>03</b><span>识别与导出</span></div>
           <label for="threshold"><span>最低置信度</span><strong>{{ scoreThreshold.toFixed(2) }}</strong></label>
+          <p class="threshold-help">调高可能漏掉更多文字；下次 OCR 生效，文本层提取不受影响。</p>
           <input id="threshold" v-model.number="scoreThreshold" type="range" min="0" max="1" step="0.05" :disabled="modelControlsBusy" />
           <label v-if="recognitionMode === 'table'" class="merge-setting">
             <input v-model="mergeCrossPageTables" type="checkbox" />
@@ -1324,12 +1415,17 @@ function showError(error: unknown): void {
           </label>
           <button v-if="!queueRunning && !queuePaused" class="primary-button" :disabled="setupBusy || queueStarting || exportBusy || !queuedCount" @click="runQueue">开始批量识别</button>
           <div v-else class="control-grid">
-            <button v-if="!queuePaused" class="secondary-button" @click="pauseQueue">暂停</button>
-            <button v-else class="primary-button compact" @click="resumeQueue">继续</button>
-            <button class="danger-button" @click="cancelQueue">取消队列</button>
+            <button v-if="!queuePaused" class="secondary-button" :disabled="!!queueTransition || phase === 'preparing'" @click="pauseQueue">{{ queueTransition === 'pausing' ? '正在暂停……' : '暂停' }}</button>
+            <button v-else class="primary-button compact" :disabled="!!queueTransition" @click="resumeQueue">{{ queueTransition === 'resuming' ? '正在继续……' : '继续' }}</button>
+            <button class="danger-button" :disabled="queueTransition === 'cancelling' || phase === 'preparing'" @click="cancelQueue">{{ queueTransition === 'cancelling' ? '正在取消……' : '取消队列' }}</button>
           </div>
-          <button v-if="queueRunning" class="secondary-button skip-button" @click="skipCurrentTask">跳过当前文件，继续下一项</button>
+          <button v-if="queueRunning" :disabled="!!queueTransition || phase === 'preparing'" class="secondary-button skip-button" @click="skipCurrentTask">跳过当前文件，继续下一项</button>
           <button v-if="queueRunning" class="force-button" @click="forceStopQueue">长时间无响应？强制停止</button>
+          <template v-if="tasks.length">
+          <div class="export-targets">
+            <label>导出范围<select v-model="exportScope" :disabled="exportBusy" aria-label="导出范围"><option value="all">全部已有结果</option><option value="current">当前文件</option><option value="checked">勾选任务</option></select></label>
+            <label>文本版本<select v-model="exportTextVersion" :disabled="exportBusy" aria-label="导出文本版本"><option value="formatted">整理后（含校对）</option><option value="original">整理前</option></select></label>
+          </div>
           <div class="export-options">
             <span>导出格式</span>
             <label><input v-model="exportTxt" type="checkbox" />TXT</label>
@@ -1346,17 +1442,20 @@ function showError(error: unknown): void {
             <p>支持 {date} 日期、{profile} 档位、{mode} 模式。无表格不生成 XLSX；文字模式可导出 HTML。</p>
           </details>
           <button class="secondary-button export-button" :disabled="!canExportSelectedFormats" @click="exportSelectedFormats">{{ exportBusy ? "正在导出……" : `导出所选格式（${exportEstimate}）` }}</button>
+          <p class="export-hint" v-if="exportScope !== 'all' && !exportableTasks.length">此范围暂无可导出结果。</p>
           <p v-if="!exportFormatSelected" class="export-hint">请至少选择一种格式。</p>
+          </template>
+          <p v-else class="pause-note">添加文件后，可选择导出范围、文本版本与格式。</p>
           <p v-if="tasks.length" class="pause-note">暂停和普通取消会在当前页识别结束后生效。</p>
         </div>
       </aside>
 
-      <section class="content-grid">
+      <section :class="['content-grid', {'pdf-workspace': isPdf}]">
         <article class="panel preview-panel">
-          <div class="panel-title"><span>文档预览</span><small>{{ fileName || "尚未选择任务" }}</small></div>
+          <div class="panel-title"><span>{{ isPdf ? "文档信息与设置" : "文档预览" }}</span><small>{{ fileName || "尚未选择任务" }}</small></div>
           <div class="preview-content">
           <details class="text-settings" open>
-            <summary><span>文档设置</span><small>文字来源、注音与文本整理</small></summary>
+            <summary><span>文档设置</span><small>识别设置用于整个队列 · 整理设置用于所有结果</small></summary>
             <div class="text-settings-grid">
               <label class="text-setting-field">
                 <span class="text-setting-name">PDF 文字来源</span>
@@ -1376,18 +1475,18 @@ function showError(error: unknown): void {
               </label>
               <label class="text-setting-field">
                 <span class="text-setting-name">注音输出</span>
-                <select v-model="textSettings.rubyFormat" :disabled="queueRunning || exportBusy || !textSettings.rubyEnabled" aria-label="注音输出"><option value="ignore">忽略注音</option><option value="parentheses">括号保留</option><option value="ruby">Ruby 小字（HTML）</option></select>
+                <select v-model="textSettings.rubyFormat" :disabled="queueRunning || exportBusy || (!textSettings.rubyEnabled && !hasRecognizedRuby)" aria-label="注音输出"><option value="ignore">忽略注音</option><option value="parentheses">括号保留</option><option value="ruby">Ruby 小字（HTML）</option></select>
               </label>
             </div>
-            <p class="text-settings-help">来源和注音识别设置在下次识别生效；整理与注音格式无需重识别。仅用于文字模式，表格保持原流程。自动判断未发现文本层错误时，可改用强制 OCR。</p>
+            <p class="text-settings-help">文字来源和注音识别用于下次识别；整理与注音格式立即作用于已有文字结果，保留手动校对。页码和旋转仅用于当前文件。文本层内容异常时可用强制 OCR。</p>
           </details>
           <div v-if="selectedTask" class="document-controls">
             <template v-if="isPdf">
               <div class="document-control-row page-range-row">
-                <span class="page-range-label">识别页码</span>
+                <span class="page-range-label">当前 PDF 页码</span>
                 <label class="page-range-radio"><input v-model="pageRangeMode" value="all" type="radio" name="page-range-mode" :disabled="modelControlsBusy" @change="applyPageRange()" />全部页</label>
                 <label class="page-range-radio"><input v-model="pageRangeMode" value="custom" type="radio" name="page-range-mode" :disabled="modelControlsBusy" />指定页码</label>
-                <input v-model="pageRangeDraft" aria-label="指定 PDF 页码" placeholder="输入页码，例如 1,3-5,8" maxlength="2000" :disabled="modelControlsBusy" @focus="pageRangeMode = 'custom'" @input="pageRangeMode = 'custom'" @change="applyPageRange()" />
+                <input v-model="pageRangeDraft" aria-label="指定 PDF 页码" placeholder="输入页码，例如 1,3-5,8" maxlength="2000" :disabled="modelControlsBusy" @focus="pageRangeMode = 'custom'" @input="pageRangeMode = 'custom'; documentSettingsError = ''" @change="applyPageRange()" />
               </div>
               <div class="page-range-scope">
                 <span class="page-range-scope-label">页码设置应用范围</span>
@@ -1399,7 +1498,7 @@ function showError(error: unknown): void {
                 <span>当前 PDF：{{ selectedTask.fileName }}</span>
                 <span>已勾选 PDF：{{ checkedPdfCount }} 个</span>
               </div>
-              <p>当前设置：{{ selectedTask.pageRange || "全部页" }}{{ selectedTask.sourcePageCount ? ` · 原文共 ${selectedTask.sourcePageCount} 页` : "" }}。页码按 PDF 实际顺序计算，不是正文印刷页码；设置会在下次识别时生效。</p>
+              <p role="status">{{ documentSettingsBusy ? "正在校验……" : documentSettingsError ? "输入有误，上次范围：" : pageRangeDirty ? "尚未生效，上次范围：" : "已生效：" }}{{ selectedTask.pageRange || "全部页" }}{{ selectedTask.sourcePageCount ? ` · 原文共 ${selectedTask.sourcePageCount} 页` : "" }}。页码按 PDF 实际顺序计算，不是正文印刷页码；设置会在下次识别时生效。</p>
               <p v-if="documentSettingsError" class="document-settings-error" role="alert">{{ documentSettingsError }}</p>
             </template>
             <template v-else>
@@ -1419,7 +1518,7 @@ function showError(error: unknown): void {
           </div>
           <div v-if="previewError" class="empty-state"><p>{{ previewError }}</p></div>
           <ImagePreview v-else-if="previewUrl" :src="previewUrl" :alt="fileName" :rotation="selectedTask?.rotation ?? 0" @error="previewError = '无法显示此图片格式或文件已不可读，仍可尝试识别或查看已保存的结果。'" />
-          <div v-else-if="isPdf" class="empty-state pdf-state"><div class="document-icon">PDF</div><p>PDF 已加入队列，将按所选页码逐页识别</p></div>
+          <p v-else-if="isPdf" class="pdf-info">PDF 按实际页序处理；自动模式优先读取文本层，需要 OCR 时才准备模型。</p>
           <div v-else class="empty-state"><div class="scan-mark"><i></i><i></i><i></i><i></i></div><p>从左侧添加并选择图片或 PDF</p></div>
           </div>
         </article>
@@ -1428,6 +1527,7 @@ function showError(error: unknown): void {
           <div class="panel-title">
             <span>{{ resultFocusMode ? fileName || "识别结果" : "识别结果" }}</span>
             <div class="result-actions">
+              <span v-if="resultFocusMode" :class="['focus-save', { 'save-error': saveFailed }]" :title="saveStatus" role="status">{{ saveBadgeLabel }}</span>
               <div v-if="selectedResult" class="result-tabs">
                 <button :class="{ active: resultView === 'text' }" @click="resultView = 'text'">文本</button>
                 <button :class="{ active: resultView === 'tables' }" :disabled="!selectedTables.length" @click="resultView = 'tables'">表格 {{ selectedTables.length }}</button>
@@ -1438,6 +1538,7 @@ function showError(error: unknown): void {
                 @click="mergeCrossPageTables = !mergeCrossPageTables"
               >{{ mergeCrossPageTables ? "按页拆分" : "合并连续页" }}</button>
               <button
+                v-if="!resultFocusMode || resultView === 'tables'"
                 class="text-button"
                 :disabled="resultView === 'tables' ? !selectedTables.length : !selectedResult?.text"
                 @click="copyCurrentResult"
@@ -1460,10 +1561,11 @@ function showError(error: unknown): void {
                 <button type="button" :class="{ active: rawTextView }" role="tab" :aria-selected="rawTextView" :disabled="exportBusy || queueRunning" @click="rawTextView = true">整理前</button>
                 <button type="button" :class="{ active: !rawTextView }" role="tab" :aria-selected="!rawTextView" :disabled="exportBusy || queueRunning" @click="rawTextView = false">整理后</button>
               </div>
-              <label v-if="textSettings.rubyFormat === 'ruby' && !rawTextView && !selectedTask?.textEdited" title="关闭后以普通文本显示，便于直接校对"><input v-model="rubyPreview" type="checkbox" />显示日语注音（Ruby）</label>
+              <label v-if="textSettings.rubyFormat === 'ruby' && (resultFocusMode || !rawTextView) && !selectedTask?.textEdited" title="关闭后以普通文本显示，便于直接校对"><input v-model="rubyPreview" type="checkbox" />显示日语注音（Ruby）</label>
               <button v-if="selectedTask?.textEdited" :disabled="queueRunning || exportBusy" @click="discardTextEdits">恢复自动整理版</button>
               <small v-for="message in textProjection.warnings" :key="message">{{ message }}</small>
-              <small v-if="selectedResult.pages.some(p=>p.source === 'pdf-text')">部分或全部页面直接取自 PDF 文本层，未进行 OCR。</small>
+              <small>来源：文本层 {{ selectedResult.pages.filter(p=>p.source === 'pdf-text').length }} 页 · OCR {{ selectedResult.pages.filter(p=>p.source === 'ocr').length }} 页 · 旧结果未记录 {{ selectedResult.pages.filter(p=>!p.source).length }} 页。</small>
+              <small>本结果：{{ selectedResult.profile === 'fast' ? '轻量' : '高精度' }} · {{ selectedTask?.resultType === 'table' ? '表格与文字' : '普通文字' }} · 页码 {{ selectedResult.pageRange || '全部页' }} · 注音{{ selectedResult.rubyEnabled ? '已启用' : '未启用' }}。</small>
             </div>
             <div class="metrics">
               <div><b>{{ selectedPageCount }} / {{ selectedTotalPageCount }}</b><span>{{ selectedUsesImageBatch ? "同批图片完成 / 总数" : selectedResult.pageRange ? "已完成 / 所选页数" : "已完成 / 总页数" }}</span></div>
@@ -1473,7 +1575,7 @@ function showError(error: unknown): void {
             </div>
             <div v-if="resultFocusMode && resultView === 'text'" class="focus-text-compare">
               <section class="focus-text-column"><div class="focus-text-heading"><span>整理前</span><button class="text-button" :disabled="!rawTextProjection.text" @click="copyText(rawTextProjection.text, '整理前文本')">复制全文</button></div><textarea :value="rawTextProjection.text" readonly spellcheck="false" aria-label="整理前文本"></textarea></section>
-              <section class="focus-text-column"><div class="focus-text-heading"><span>整理后</span><button class="text-button" :disabled="!formattedTextProjection.text" @click="copyText(formattedTextProjection.text, '整理后文本')">复制全文</button></div><textarea :value="formattedTextProjection.text" :readonly="exportBusy" spellcheck="false" aria-label="整理后文本" @input="updateSelectedText"></textarea></section>
+              <section class="focus-text-column"><div class="focus-text-heading"><span>整理后</span><button class="text-button" :disabled="!formattedTextProjection.text" @click="copyText(formattedTextProjection.text, '整理后文本')">复制全文</button></div><div v-if="textSettings.rubyFormat === 'ruby' && rubyPreview && !selectedTask?.textEdited" class="ruby-text-preview" aria-label="整理后注音预览" v-html="formattedTextProjection.html"></div><textarea v-else :value="formattedTextProjection.text" :readonly="exportBusy" spellcheck="false" aria-label="整理后文本" @input="updateSelectedText"></textarea></section>
             </div>
             <div v-else-if="resultView === 'text' && textSettings.rubyFormat === 'ruby' && rubyPreview && !rawTextView && !selectedTask?.textEdited" class="ruby-text-preview" aria-label="Ruby 文本预览" v-html="textProjection.html"></div>
             <textarea v-else-if="resultView === 'text'" :value="textProjection.text" :readonly="exportBusy || rawTextView" spellcheck="false" aria-label="识别文本" @input="updateSelectedText"></textarea>
@@ -1485,7 +1587,8 @@ function showError(error: unknown): void {
       </section>
     </section>
 
-    <footer :class="['statusbar', { error: phase === 'error' }]" :title="status">
+    <div v-if="feedback" class="action-feedback" role="status"><span>{{ feedback }}</span><button aria-label="关闭提示" @click="feedback = ''">关闭</button></div>
+    <footer role="status" aria-live="polite" :class="['statusbar', { error: phase === 'error' }]" :title="status">
       <span class="status-dot"></span>
       <div class="status-content">
         <span>{{ status }}</span>
