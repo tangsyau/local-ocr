@@ -164,12 +164,14 @@ try {
         return { before, after: control.getBoundingClientRect().top,
           outside: !scroller.contains(control),
           count: document.querySelectorAll('.table-top-scroll').length,
+          controlLeft: control.scrollLeft, controlGutter: getComputedStyle(control).scrollbarGutter,
           controlRange: control.scrollWidth - control.clientWidth, bodyRange: body.scrollWidth - body.clientWidth, bodyLeft: body.scrollLeft,
           reachesEnd: Math.abs(body.scrollLeft - (body.scrollWidth - body.clientWidth)) <= 2 };
       });
       assert.equal(fixedBar.count,1,'only one persistent horizontal control');
       assert.ok(fixedBar.outside,'horizontal control is outside vertical reading area');
       assert.equal(fixedBar.before,fixedBar.after,'control must remain visible midway down a tall table');
+      assert.ok(Math.abs(fixedBar.controlLeft - fixedBar.controlRange) <= 2, `horizontal control must reach its calculated endpoint: ${JSON.stringify(fixedBar)}`);
       assert.ok(fixedBar.reachesEnd, `the control must reach the final column despite viewport padding: ${JSON.stringify(fixedBar)}`);
       await page.getByRole("button", {name:"进入专注模式",exact:true}).click();
       const focusFits = await page.locator(".result-panel").evaluate((element)=>element.getBoundingClientRect().bottom <= innerHeight + 2);

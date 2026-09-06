@@ -196,7 +196,8 @@ textarea { flex: 1 1 0; width: 100%; height: auto; min-height: 0; resize: none; 
 .table-card-title { padding: 9px 11px; display: flex; align-items: center; justify-content: space-between; gap: 10px; border-bottom: 1px solid #e3e6e1; }
 .table-card-title strong { font-size: var(--font-small); }
 .table-card-title small { color: #59675e; font-size: var(--font-small); }
-.table-top-scroll { width: 100%; height: 17px; overflow-x: scroll; overflow-y: hidden; scrollbar-width: auto; scrollbar-color: #6f8676 #e2e7e1; scrollbar-gutter: stable; overscroll-behavior-x: contain; background: #f7f8f5; }
+/* Horizontal-only control: do not reserve a vertical scrollbar gutter. */
+.table-top-scroll { width: 100%; height: 17px; overflow-x: scroll; overflow-y: hidden; scrollbar-width: auto; scrollbar-color: #6f8676 #e2e7e1; scrollbar-gutter: auto; overscroll-behavior-x: contain; background: #f7f8f5; }
 .table-scroll-spacer { height: 1px; min-width: 100%; }
 .table-scroll { display: block; width: 100%; min-width: 0; max-width: 100%; padding: 10px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; overscroll-behavior-x: contain; }
 .table-scroll table { width: max-content; min-width: 100%; border-collapse: collapse; color: #28312b; font-size: var(--font-small); }
