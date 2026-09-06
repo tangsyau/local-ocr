@@ -19,12 +19,21 @@ function measureAll(): void {
   const next = props.tables.map((_, index) => ((bodyScrollers.get(index)?.scrollWidth ?? 0) - (bodyScrollers.get(index)?.clientWidth ?? 0) + (horizontal.value?.clientWidth ?? 0)));
   if (next.length !== widths.value.length || next.some((value,index) => value !== widths.value[index])) widths.value = next;
 }
+// Use the live scroll ranges: scrollbar gutters and fractional layout can make
+// the two viewports differ, including between a resize and the next measurement.
+function syncScroll(source: HTMLElement, target: HTMLElement): void {
+  const sourceRange = Math.max(0, source.scrollWidth - source.clientWidth);
+  const targetRange = Math.max(0, target.scrollWidth - target.clientWidth);
+  const next = sourceRange ? Math.min(1, Math.max(0, source.scrollLeft / sourceRange)) * targetRange : 0;
+  if (Math.abs(target.scrollLeft - next) > 0.5) target.scrollLeft = next;
+}
 function scrollFromTop(): void {
   const body = bodyScrollers.get(active.value);
-  if (body && horizontal.value) body.scrollLeft = horizontal.value.scrollLeft;
+  if (body && horizontal.value) syncScroll(horizontal.value, body);
 }
 function scrollFromBody(index: number): void {
-  if (index === active.value && horizontal.value) horizontal.value.scrollLeft = bodyScrollers.get(index)?.scrollLeft ?? 0;
+  const body = bodyScrollers.get(index);
+  if (index === active.value && horizontal.value && body) syncScroll(body, horizontal.value);
 }
 async function activate(index: number): Promise<void> {
   active.value = index;
@@ -51,6 +60,7 @@ onMounted(() => {
   if (typeof ResizeObserver !== "undefined") {
     observer = new ResizeObserver(measureAll);
     for (const body of bodyScrollers.values()) observer.observe(body);
+    if (horizontal.value) observer.observe(horizontal.value);
   }
   window.addEventListener("resize", measureAll);
   void nextTick(measureAll);

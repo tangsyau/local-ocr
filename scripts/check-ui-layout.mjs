@@ -144,10 +144,11 @@ try {
         top.scrollLeft = 420;
         top.dispatchEvent(new Event("scroll"));
         return { top: top.scrollLeft, body: body.scrollLeft, width: top.scrollWidth, viewport: top.clientWidth,
+          bodyRange: body.scrollWidth - body.clientWidth,
           bodyScrollbar: getComputedStyle(body,"::-webkit-scrollbar").display, headerPosition: getComputedStyle(header).position };
       });
       assert.ok(scrollInfo.width > scrollInfo.viewport);
-      assert.equal(scrollInfo.top, scrollInfo.body);
+      assert.ok(Math.abs(scrollInfo.top / (scrollInfo.width - scrollInfo.viewport) - scrollInfo.body / scrollInfo.bodyRange) < .005, "horizontal positions must have matching proportions");
       assert.ok(scrollInfo.top > 0);
       assert.equal(scrollInfo.bodyScrollbar,"none");
       assert.notEqual(scrollInfo.headerPosition,"sticky");
@@ -163,12 +164,13 @@ try {
         return { before, after: control.getBoundingClientRect().top,
           outside: !scroller.contains(control),
           count: document.querySelectorAll('.table-top-scroll').length,
+          controlRange: control.scrollWidth - control.clientWidth, bodyRange: body.scrollWidth - body.clientWidth, bodyLeft: body.scrollLeft,
           reachesEnd: Math.abs(body.scrollLeft - (body.scrollWidth - body.clientWidth)) <= 2 };
       });
       assert.equal(fixedBar.count,1,'only one persistent horizontal control');
       assert.ok(fixedBar.outside,'horizontal control is outside vertical reading area');
       assert.equal(fixedBar.before,fixedBar.after,'control must remain visible midway down a tall table');
-      assert.ok(fixedBar.reachesEnd,'the control must reach the final column despite viewport padding');
+      assert.ok(fixedBar.reachesEnd, `the control must reach the final column despite viewport padding: ${JSON.stringify(fixedBar)}`);
       await page.getByRole("button", {name:"进入专注模式",exact:true}).click();
       const focusFits = await page.locator(".result-panel").evaluate((element)=>element.getBoundingClientRect().bottom <= innerHeight + 2);
       assert.ok(focusFits, "focus mode exceeds viewport");

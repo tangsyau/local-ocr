@@ -42,6 +42,7 @@ describe("TableResultViewer", () => {
     await nextTick();
     expect(wrapper.find<HTMLElement>(".table-scroll-spacer").element.style.width).toBe("1600px");
 
+    Object.defineProperty(top.element, "scrollWidth", { configurable: true, value: 1600 });
     top.element.scrollLeft = 320;
     await top.trigger("scroll");
     expect(body.element.scrollLeft).toBe(320);
@@ -49,6 +50,35 @@ describe("TableResultViewer", () => {
     body.element.scrollLeft = 525;
     await body.trigger("scroll");
     expect(top.element.scrollLeft).toBe(525);
+  });
+
+  it("reaches both edges with unequal live ranges, including after resize", async () => {
+    const wrapper = mount(TableResultViewer, { props: { tables: [wideTallTable()] } });
+    const top = wrapper.find<HTMLElement>(".table-top-scroll");
+    const body = wrapper.find<HTMLElement>(".table-scroll");
+    const dimensions = (element: HTMLElement, width: number, viewport: number) => {
+      Object.defineProperty(element, "scrollWidth", { configurable: true, value: width });
+      Object.defineProperty(element, "clientWidth", { configurable: true, value: viewport });
+    };
+    dimensions(top.element, 1588, 800);
+    dimensions(body.element, 1600, 780);
+    top.element.scrollLeft = 788;
+    await top.trigger("scroll");
+    expect(body.element.scrollLeft).toBe(820);
+    top.element.scrollLeft = 394;
+    await top.trigger("scroll");
+    expect(body.element.scrollLeft).toBe(410);
+    dimensions(body.element, 1800, 700);
+    top.element.scrollLeft = 788;
+    await top.trigger("scroll");
+    expect(body.element.scrollLeft).toBe(1100);
+    body.element.scrollLeft = 550;
+    await body.trigger("scroll");
+    expect(top.element.scrollLeft).toBe(394);
+    body.element.scrollLeft = 0;
+    await body.trigger("scroll");
+    expect(top.element.scrollLeft).toBe(0);
+    wrapper.unmount();
   });
 
   it("creates tab-separated clipboard text", () => {
@@ -62,6 +92,7 @@ describe("TableResultViewer", () => {
     const wrapper = mount(TableResultViewer, { props: { tables: [first], viewKey: "document-one" } });
     const body = wrapper.find<HTMLElement>(".table-scroll");
     const top = wrapper.find<HTMLElement>(".table-top-scroll");
+    for (const element of [top.element, body.element]) Object.defineProperty(element, "scrollWidth", { configurable: true, value: 1600 });
     top.element.scrollLeft = 360;
     await top.trigger("scroll");
     wrapper.find<HTMLElement>(".table-results").element.scrollTop = 180;
