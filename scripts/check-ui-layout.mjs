@@ -191,6 +191,19 @@ try {
         await page.setViewportSize(viewport);
         await assertImageLayout(page, 0);
       }
+      // Exercise real IndexedDB retention across queue clearing and a reload.
+      if (screenWidth === 1920 && scale === 1) {
+        await page.getByRole("button", {name:"清理已结束（保留历史）",exact:true}).click();
+        await page.waitForFunction(() => document.querySelectorAll('.task-item').length === 0);
+        await page.getByText("已自动保存", {exact:true}).waitFor();
+        await page.reload();
+        await page.getByRole("button", {name:"识别历史",exact:true}).click();
+        await page.getByRole("dialog").waitFor();
+        await page.getByRole("button", {name:"打开结果",exact:true}).click();
+        await page.getByRole("button", {name:"表格 1",exact:true}).click();
+        assert.equal(await page.locator('.table-scroll tbody tr').count(), 120, "archived table rows must survive clearing and reload");
+        await page.screenshot({path:path.join(screenshots,`${label}-history-restored.png`)});
+      }
       assert.deepEqual(errors,[]);
       console.log(`Layout passed: ${screenWidth}x${screenHeight} / ${scale*100}%`);
       } catch (error) {

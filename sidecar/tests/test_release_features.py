@@ -37,6 +37,17 @@ class ExportRulesTests(unittest.TestCase):
             self.assertEqual(set(result["exportedIds"]), {"one", "two"})
             self.assertEqual({item["name"] for item in preview["files"]}, {item.name for item in Path(directory).iterdir()})
 
+    def test_skipped_format_does_not_mark_whole_task_fully_exported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            payload = sample_payload(directory)
+            payload["options"]["collision"] = "skip"
+            (Path(directory) / "第一页.txt").write_text("原有文件", encoding="utf-8")
+            result = export_results(payload)
+            self.assertIn("one", result["exportedIds"])
+            self.assertNotIn("one", result["fullyExportedIds"])
+            self.assertIn("two", result["fullyExportedIds"])
+            self.assertEqual((Path(directory) / "第一页.txt").read_text(encoding="utf-8"), "原有文件")
+
     def test_combined_exports_have_source_labels_and_literal_excel_text(self) -> None:
         from openpyxl import load_workbook
         with tempfile.TemporaryDirectory() as directory:

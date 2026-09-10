@@ -17,6 +17,8 @@ export interface AppSettings {
   textSettings?: TextSettings;
   rawTextView?: boolean;
   exportTextVersion?: "original" | "formatted";
+  autoExport?: boolean;
+  autoExportDirectory?: string;
   exportScope?: "all" | "current" | "checked";
 }
 
@@ -91,6 +93,8 @@ export function restoreSession(value: unknown, storedPages: Map<string, OcrPage[
     exportName: String(input.exportName || defaultSettings.exportName).slice(0, 100),
     localModelsOnly: input.localModelsOnly === true,
     exportTextVersion: input.exportTextVersion === "original" ? "original" : "formatted",
+    autoExport: input.autoExport === true,
+    autoExportDirectory: typeof input.autoExportDirectory === "string" ? input.autoExportDirectory : "",
     exportScope: "all", // Selection is transient; restore to the explicit all-results scope.
     textSettings: normalizeTextSettings(input.textSettings), rawTextView: input.rawTextView === true
   };
@@ -131,22 +135,20 @@ function openDatabase(): Promise<IDBDatabase> {
 
 export async function loadSession(): Promise<SavedSession | null> {
   const db = await openDatabase();
-  const [value, records] = await Promise.all([
-    new Promise<unknown>((resolve, reject) => {
-      const request = db.transaction("state", "readonly").objectStore("state").get("session");
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(new Error("读取自动保存记录失败"));
-    }),
-    new Promise<PageCheckpoint[]>((resolve, reject) => {
-      const request = db.transaction("pages", "readonly").objectStore("pages").getAll();
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(new Error("读取逐页识别检查点失败"));
-    })
-  ]);
+  const value = await new Promise<unknown>((resolve, reject) => {
+    const request = db.transaction("state", "readonly").objectStore("state").get("session");
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(new Error("读取自动保存记录失败"));
+  });
+  // Read only current queue pages; archived books stay on disk until opened.
+  const ids = (value as SavedSession | null)?.tasks?.map(task => task.id) ?? [];
+  const records = (await Promise.all(ids.map(id => readTaskPages(db, id)))).flat();
   const record = value as { commitId?: string; savedAt?: string } | null;
   storedRevision = record?.commitId ?? record?.savedAt ?? null;
   const byTask = new Map<string, OcrPage[]>();
-  for (const item of records) byTask.set(item.taskId, [...(byTask.get(item.taskId) ?? []), item.page]);
+  for (const item of records) {
+    const pages = byTask.get(item.taskId) ?? []; pages.push(item.page); byTask.set(item.taskId, pages);
+  }
   const restored = restoreSession(value, byTask);
   persistedTaskIds = new Set(restored?.tasks.map((task) => task.id) ?? []);
   return restored;
@@ -175,7 +177,18 @@ export async function saveSession(session: SavedSession, options: SaveSessionOpt
         transaction.abort();
         return;
       }
-      for (const taskId of new Set([...(options.resetTaskIds ?? []), ...removed])) pages.delete(taskPageRange(taskId));
+      // Queue removal is not history deletion. Archive metadata and retain its
+      // page checkpoints in the same transaction, including when an old client
+      // session has not yet been written by this version.
+      for (const task of value?.tasks ?? []) {
+        if (removed.includes(task.id) && task.result) {
+          state.put({ task, settings: value.settings, savedAt: value.savedAt }, `history/${task.id}`);
+        } else if (removed.includes(task.id)) pages.delete(taskPageRange(task.id));
+      }
+      for (const task of header.tasks) if (task.result) {
+        state.put({ task, settings: header.settings, savedAt: header.savedAt }, `history/${task.id}`);
+      }
+      for (const taskId of options.resetTaskIds ?? []) pages.delete(taskPageRange(taskId));
       for (const checkpoint of options.pages ?? []) pages.put(checkpoint);
       state.put({ ...header, commitId }, "session");
     };
@@ -183,5 +196,52 @@ export async function saveSession(session: SavedSession, options: SaveSessionOpt
     transaction.onerror = transaction.onabort = () => reject(new Error(conflict
       ? "另一个窗口已保存新记录；为避免覆盖，当前窗口停止自动保存。请先导出当前结果，再关闭多余窗口。"
       : "自动保存失败：请检查剩余磁盘空间和数据目录权限"));
+  });
+}
+
+
+export interface HistoryEntry { task: OcrTask; settings: AppSettings; savedAt: string }
+const historyRange = () => IDBKeyRange.bound("history/", "history/\uffff");
+function readTaskPages(db: IDBDatabase, taskId: string): Promise<PageCheckpoint[]> {
+  return new Promise((resolve, reject) => {
+    const request = db.transaction("pages", "readonly").objectStore("pages").getAll(taskPageRange(taskId));
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(new Error("读取逐页识别结果失败"));
+  });
+}
+export async function listHistory(): Promise<HistoryEntry[]> {
+  const db = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const request = db.transaction("state", "readonly").objectStore("state").getAll(historyRange());
+    request.onsuccess = () => resolve((request.result as HistoryEntry[]).sort((a,b) => b.savedAt.localeCompare(a.savedAt)));
+    request.onerror = () => reject(new Error("读取识别历史失败"));
+  });
+}
+export async function readHistory(id: string): Promise<HistoryEntry> {
+  const db = await openDatabase();
+  const entry = await new Promise<HistoryEntry>((resolve, reject) => {
+    const request = db.transaction("state", "readonly").objectStore("state").get(`history/${id}`);
+    request.onsuccess = () => request.result ? resolve(request.result) : reject(new Error("这条历史记录已不存在"));
+    request.onerror = () => reject(new Error("读取识别历史失败"));
+  });
+  const records = await readTaskPages(db, id);
+  const restored = restoreSession({ schema: 2, tasks: [entry.task], selectedTaskId: id, settings: entry.settings },
+    new Map([[id, records.map(item => item.page)]]));
+  return { ...entry, task: restored!.tasks[0] };
+}
+export async function deleteHistory(ids: string[]): Promise<void> {
+  const db = await openDatabase();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(["state", "pages"], "readwrite");
+    const state = tx.objectStore("state");
+    const current = state.get("session");
+    let active = false;
+    current.onsuccess = () => {
+      active = (current.result?.tasks ?? []).some((task: OcrTask) => ids.includes(task.id));
+      if (active) { tx.abort(); return; }
+      for (const id of ids) { state.delete(`history/${id}`); tx.objectStore("pages").delete(taskPageRange(id)); }
+    };
+    tx.oncomplete = () => resolve();
+    tx.onerror = tx.onabort = () => reject(new Error(active ? "请先从当前队列移除这些任务，再永久删除历史" : "删除历史失败，原记录仍保留"));
   });
 }

@@ -142,6 +142,9 @@ export interface OcrTask {
   missing?: boolean;
   revision?: number;
   exportedRevision?: number;
+  exportError?: string;
+  exportDirectory?: string;
+  exportedAt?: string;
   textEdited?: boolean;
   pageRange?: string;
   rotation?: number;

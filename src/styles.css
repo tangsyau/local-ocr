@@ -340,3 +340,23 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 }
 
 button.task-main { border: 0; background: transparent; padding: 0; text-align: left; color: inherit; }
+
+.auto-export-settings { padding: 8px; border: 1px solid #d5dfd7; border-radius: 8px; font-size: var(--font-small); }
+.auto-export-settings p { margin: 5px 0 0; color: #59675e; }
+.export-directory { font-family: "Cascadia Mono", Consolas, monospace; overflow-wrap: anywhere; }
+.history-backdrop { position: fixed; inset: 0; z-index: 100; background: #17251c66; display: flex; align-items: center; justify-content: center; padding: 20px; }
+.history-dialog { width: min(900px, 100%); max-height: 90vh; min-height: 0; display: flex; flex-direction: column; gap: 12px; padding: 20px; border-radius: 14px; background: #f7f9f5; box-shadow: 0 12px 50px #14251b44; font-size: var(--font-control); }
+.history-dialog header, .history-dialog footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; flex-shrink: 0; }
+.history-dialog h2 { margin: 0; font-size: 18px; }
+.history-dialog p { margin: 0; color: #59675e; }
+.history-dialog input[type="search"] { flex-shrink: 0; width: 100%; }
+.history-list { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.history-row { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 12px 0; border-bottom: 1px solid #d5dfd7; }
+.history-row strong, .history-row small { display: block; overflow-wrap: anywhere; }
+.history-row small { color: #59675e; margin-top: 4px; font-size: var(--font-small); }
+.history-open-button { margin-left: auto; padding: 3px 8px; border: 1px solid #cad2cb; border-radius: 6px; color: #3f644c; background: #fff; font-size: var(--font-small); }
+.step-card .auto-export-settings p { margin: 5px 0 0; font-size: var(--font-small); }
+@media (max-height: 900px) {
+  .settings-card .export-options { margin-top: 5px; padding-block: 5px; }
+  .settings-card > .merge-setting { margin-block: 5px; }
+}

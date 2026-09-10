@@ -9,14 +9,14 @@ import { defaultSettings } from "./lib/session";
 const mock = vi.hoisted(() => ({
   running: true,
   saved: null as unknown,
-  load: vi.fn(), save: vi.fn(), request: vi.fn(), open: vi.fn(), forceStop: vi.fn(),
+  load: vi.fn(), save: vi.fn(), listHistory: vi.fn(), readHistory: vi.fn(), deleteHistory: vi.fn(), request: vi.fn(), open: vi.fn(), forceStop: vi.fn(),
   jobs: [] as Array<{ resolve: (value: unknown) => void; reject: (reason: Error) => void; onEvent?: (value: unknown) => void }>,
   exit: null as (() => void) | null,
   dropped: null as ((paths: string[]) => void) | null,
   counter: 0
 }));
 
-vi.mock("./lib/session", async (original) => ({ ...(await original<object>()), loadSession: mock.load, saveSession: mock.save }));
+vi.mock("./lib/session", async (original) => ({ ...(await original<object>()), loadSession: mock.load, saveSession: mock.save, listHistory: mock.listHistory, readHistory: mock.readHistory, deleteHistory: mock.deleteHistory }));
 vi.mock("./lib/tauri-bridge", () => ({
   createId: () => `id-${++mock.counter}`, localImagePreview: vi.fn(async () => ""), isWebkitGtk40Build: false,
   openLocalDialog: mock.open,
@@ -51,6 +51,7 @@ beforeEach(() => {
   mock.jobs = []; mock.running = true; mock.counter = 0;
   mock.forceStop.mockImplementation(async () => { mock.running = false; });
   mock.load.mockResolvedValue(null);
+  mock.listHistory.mockResolvedValue([]);
   mock.save.mockResolvedValue(undefined);
   mock.open.mockResolvedValue(["/one.png", "/two.png"]);
   window.confirm = vi.fn(() => true);
@@ -279,7 +280,7 @@ describe("batch and recovery interactions", () => {
     await wrapper.findAll(".task-item")[1].find('[aria-label="上移任务"]').trigger("click");
     expect(wrapper.findAll(".task-name")[0].text()).toBe("two.png");
     await button("全选 / 取消").trigger("click");
-    await button("移除勾选").trigger("click");
+    await button("移除勾选").trigger("click"); await flushPromises();
     expect(wrapper.findAll(".task-item")).toHaveLength(0);
   });
 
@@ -437,4 +438,60 @@ describe("0.13 lazy model handoff",()=>{
     expect(mock.forceStop).toHaveBeenCalledOnce();expect(wrapper.find('.action-feedback').text()).toContain("已停止");
     expect(button("启动并准备模型").attributes("disabled")).toBeUndefined();
   });
+});
+
+describe("result retention and automatic exports", () => {
+  function settings(auto = true) {
+    mock.load.mockResolvedValue({schema:2,savedAt:"now",selectedTaskId:"",tasks:[],settings:{...defaultSettings,autoExport:auto,autoExportDirectory:"/exports",formats:["txt","html"]}});
+  }
+  it("exports each completed file before starting the next without opening a dialog", async () => {
+    settings();
+    const original=mock.request.getMockImplementation()!;
+    mock.request.mockImplementation(async(method,params,event)=>method === "export_results" ? {count:2,exportedIds:params.textItems.map((item:{id:string})=>item.id)} : original(method,params,event));
+    wrapper=mount(App);await flushPromises();mock.dropped!(["/one.png","/two.png"]);await flushPromises();
+    void button("开始批量识别").trigger("click");await flushPromises();
+    mock.jobs[0].resolve(result("第一本"));await flushPromises();
+    const call=mock.request.mock.calls.find(call=>call[0]==="export_results")!;
+    expect(call[1].directory).toBe("/exports");expect(call[1].options.collision).toBe("rename");
+    expect(call[1].textItems).toHaveLength(1);expect(mock.jobs).toHaveLength(2);
+    expect(wrapper.text()).toContain("已导出");expect(mock.open).not.toHaveBeenCalled();
+    expect(mock.save.mock.calls.some(call=>call[0].tasks[0]?.result && call[0].tasks[0].exportedRevision===undefined)).toBe(true);
+    mock.jobs[1].resolve(result("第二本"));await flushPromises();
+    expect(mock.request.mock.calls.filter(call=>call[0]==="export_results")).toHaveLength(2);
+  });
+  it("keeps OCR successful on export failure, continues the batch and retries only export", async () => {
+    settings();const original=mock.request.getMockImplementation()!;let fail=true;
+    mock.request.mockImplementation(async(method,params,event)=>{
+      if(method==="export_results") {if(fail) throw new Error("磁盘已满");return {count:1,exportedIds:params.textItems.map((item:{id:string})=>item.id)};}
+      return original(method,params,event);
+    });
+    wrapper=mount(App);await flushPromises();mock.dropped!(["/one.png","/two.png"]);await flushPromises();
+    void button("开始批量识别").trigger("click");await flushPromises();mock.jobs[0].resolve(result("保留内容"));await flushPromises();
+    expect(wrapper.find('.task-item').classes()).toContain("completed");expect(wrapper.text()).toContain("磁盘已满");expect(mock.jobs).toHaveLength(2);
+    mock.jobs[1].resolve(result("第二本"));await flushPromises();fail=false;
+    await button("重试导出").trigger("click");await flushPromises();expect(mock.jobs).toHaveLength(2);
+    expect(wrapper.find('.task-item').text()).toContain("已导出");
+  });
+  it("blocks automatic export with no directory or with only XLSX for text", async () => {
+    settings();wrapper=mount(App);await flushPromises();mock.dropped!(["/one.png"]);await flushPromises();
+    const formats=wrapper.findAll('.export-options input');await formats[0].setValue(false);await formats[1].setValue(true);await formats[2].setValue(false);
+    await button("开始批量识别").trigger("click");await flushPromises();expect(mock.jobs).toHaveLength(0);expect(wrapper.text()).toContain("普通文字无法生成 XLSX");
+  });
+  it("does not clear queue if saving the results fails", async () => {
+    mock.load.mockResolvedValue({schema:2,savedAt:"now",selectedTaskId:"book",settings:defaultSettings,tasks:[{id:"book",batchId:"book",batchIndex:0,path:"/book.pdf",fileName:"book.pdf",status:"completed",resultType:"text",result:result("尚未导出")} ]});
+    wrapper=mount(App);await flushPromises();mock.save.mockRejectedValue(new Error("保存失败"));
+    await button("清理已结束").trigger("click");await flushPromises();expect(wrapper.findAll('.task-item')).toHaveLength(1);expect(wrapper.text()).toContain("保存失败");
+  });
+});
+
+
+it("opens archived results without recognizing, then can safely clear the queue again", async () => {
+  const entry={task:{id:"archived",batchId:"batch",batchIndex:0,path:"/missing.pdf",fileName:"missing.pdf",status:"completed",resultType:"text",result:result("历史书籍内容")},settings:defaultSettings,savedAt:"2026-09-10"};
+  mock.listHistory.mockResolvedValue([entry]);mock.readHistory.mockResolvedValue(entry);
+  wrapper=mount(App);await flushPromises();await button("识别历史").trigger("click");await flushPromises();
+  expect(wrapper.find('[role="dialog"]').exists()).toBe(true);expect(wrapper.text()).toContain("missing.pdf");
+  await button("打开结果").trigger("click");await flushPromises();
+  expect(wrapper.find<HTMLTextAreaElement>('textarea').element.value).toBe("历史书籍内容");expect(mock.jobs).toHaveLength(0);
+  await button("清理已结束").trigger("click");await flushPromises();
+  expect(wrapper.findAll('.task-item')).toHaveLength(0);expect(mock.deleteHistory).not.toHaveBeenCalled();
 });

@@ -8,7 +8,7 @@ import { displayTables, imageBatchTables, mergeTablePages, tableToTsv } from "./
 import { naturalPathCompare, naturalSortPaths } from "./lib/file-order";
 import { appendResultPage, beginStreamingResult, canResumeResult, completeStreamingResult, finalizeResult } from "./lib/result-state";
 import { localImagePreview, createId, isWebkitGtk40Build, listenBeforeClose, listenFileDrop, openLocalDialog } from "./lib/tauri-bridge";
-import { loadSession, saveSession, sessionHeader, type AppSettings, type PageCheckpoint, type SavedSession } from "./lib/session";
+import { loadSession, saveSession, sessionHeader, listHistory, readHistory, deleteHistory, type HistoryEntry, type AppSettings, type PageCheckpoint, type SavedSession } from "./lib/session";
 import type { DiagnosticInfo, ModelCacheStatus, ModelProfile, OcrPage, OcrResult, OcrTable, OcrTask, OcrTaskStatus, RecognitionMode, SidecarEvent } from "./lib/types";
 
 type AppPhase = "starting" | "idle" | "preparing" | "recognizing" | "paused" | "error";
@@ -45,6 +45,25 @@ const exportPrefix = ref("");
 const exportSuffix = ref("");
 const exportName = ref("批量识别结果");
 const exportBusy = ref(false);
+const autoExport = ref(false);
+const autoExportDirectory = ref("");
+const historyOpen = ref(false);
+const historyBusy = ref(false);
+const historyError = ref("");
+const historyEntries = ref<HistoryEntry[]>([]);
+const historySearch = ref("");
+const historyPage = ref(1);
+const historySelected = ref<string[]>([]);
+const filteredHistory = computed(() => historyEntries.value.filter(entry => entry.task.fileName.toLocaleLowerCase().includes(historySearch.value.toLocaleLowerCase())));
+const historyPageCount = computed(() => Math.max(1, Math.ceil(filteredHistory.value.length / 20)));
+const visibleHistory = computed(() => filteredHistory.value.slice((historyPage.value - 1) * 20, historyPage.value * 20));
+watch(historySearch, () => { historyPage.value = 1; });
+function exportState(task: OcrTask): string {
+  if (!task.result) return "";
+  if (task.exportError) return `导出失败：${task.exportError}`;
+  return task.exportedRevision === (task.revision ?? 0) ? "已导出" : "未导出当前结果";
+}
+
 const exportTextVersion = ref<"original" | "formatted">("formatted");
 const exportScope = ref<"all" | "current" | "checked">("all");
 const exportScopeLabel = computed(() => ({all:"全部已有结果",current:"当前文件",checked:"勾选任务"})[exportScope.value]);
@@ -125,7 +144,7 @@ const modelsReady = computed(
   () => preparedProfile.value === modelProfile.value && preparedMode.value === recognitionMode.value
 );
 const setupBusy = computed(() => phase.value === "starting" || phase.value === "preparing" || modelManagerBusy.value);
-const modelControlsBusy = computed(() => queueRunning.value || queueStarting.value || setupBusy.value || exportBusy.value || documentSettingsBusy.value);
+const modelControlsBusy = computed(() => queueRunning.value || queueStarting.value || setupBusy.value || exportBusy.value || historyBusy.value || documentSettingsBusy.value);
 const queuedCount = computed(() => tasks.value.filter((task) => task.status === "queued").length);
 const completedCount = computed(() => tasks.value.filter((task) => task.status === "completed").length);
 const allResultTasks = computed(() => tasks.value.filter((task) => task.result && task.result.pageCount > 0));
@@ -257,7 +276,7 @@ onBeforeUnmount(() => {
 });
 
 watch([() => sessionHeader({schema: 2, savedAt: "", selectedTaskId: "", settings: {} as AppSettings, tasks: tasks.value}).tasks, selectedTaskId, scoreThreshold, modelProfile, recognitionMode, mergeCrossPageTables,
-  exportTxt, exportXlsx, exportHtml, exportGrouping, exportCollision, exportPrefix, exportSuffix, exportName, localModelsOnly, textSettings, exportTextVersion], () => {
+  exportTxt, exportXlsx, exportHtml, exportGrouping, exportCollision, exportPrefix, exportSuffix, exportName, localModelsOnly, textSettings, exportTextVersion, autoExport, autoExportDirectory], () => {
   if (!sessionLoaded) return;
   if (saveTimer) clearTimeout(saveTimer);
   savePhase.value = "saving";
@@ -287,6 +306,8 @@ function applySettings(settings: AppSettings): void {
   textSettings.value = normalizeTextSettings(settings.textSettings);
   rawTextView.value = false;
   exportTextVersion.value = settings.exportTextVersion ?? "formatted";
+  autoExport.value = settings.autoExport === true;
+  autoExportDirectory.value = settings.autoExportDirectory ?? "";
   void nextTick(() => { restoringSettings = false; });
 }
 
@@ -305,7 +326,7 @@ async function flushSave(): Promise<void> {
     settings: { profile: modelProfile.value, mode: recognitionMode.value, threshold: scoreThreshold.value,
       merge: mergeCrossPageTables.value, formats: outputFormats(), exportGrouping: exportGrouping.value,
       exportCollision: exportCollision.value, exportPrefix: exportPrefix.value, exportSuffix: exportSuffix.value, exportName: exportName.value, localModelsOnly: localModelsOnly.value,
-      textSettings: { ...textSettings.value }, rawTextView: false, exportTextVersion: exportTextVersion.value }
+      textSettings: { ...textSettings.value }, rawTextView: false, exportTextVersion: exportTextVersion.value, autoExport: autoExport.value, autoExportDirectory: autoExportDirectory.value }
   });
   const pages = [...pendingPageSaves.values()];
   const resets = [...pendingPageResets];
@@ -344,6 +365,7 @@ function resetSavedPages(taskId: string): void {
 }
 
 async function beforeClose(): Promise<boolean> {
+  if (historyBusy.value) { feedback.value = "正在保存或恢复历史，请稍后关闭。"; return false; }
   if ((modelControlsBusy.value || hasUnexported.value) && !window.confirm(
     "仍有未导出结果或正在处理的任务。关闭将停止当前操作，已自动保存的结果可在下次打开时恢复。确定关闭？"
   )) return false;
@@ -384,6 +406,16 @@ watch(selectedTaskId, () => {
 });
 
 function handleGlobalKeydown(event: KeyboardEvent): void {
+  if (historyOpen.value) {
+    if (event.key === "Escape" && !historyBusy.value) { event.preventDefault(); closeHistory(); }
+    if (event.key === "Tab") {
+      const elements = [...document.querySelectorAll<HTMLElement>('.history-dialog button:not(:disabled), .history-dialog input:not(:disabled)')];
+      const first = elements[0], last = elements[elements.length - 1];
+      if (event.shiftKey && (document.activeElement === first || !elements.includes(document.activeElement as HTMLElement))) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && (document.activeElement === last || !elements.includes(document.activeElement as HTMLElement))) { event.preventDefault(); first?.focus(); }
+    }
+    return;
+  }
   if (event.key === "Escape" && resultFocusMode.value) resultFocusMode.value = false;
 }
 
@@ -500,15 +532,117 @@ function removeTask(task: OcrTask): void {
   removeTasks([task.id]);
 }
 
-function removeTasks(ids: string[]): void {
-  if (queueStarting.value || exportBusy.value) return;
-  const targets = tasks.value.filter((task) => ids.includes(task.id) && !["running", "paused"].includes(task.status));
-  if (targets.some((task) => task.result && task.exportedRevision !== (task.revision ?? 0)) && !window.confirm("选中任务含未导出的结果。移除后自动保存记录中也会删除这些结果，确定移除？")) return;
-  const removed = new Set(targets.map((task) => task.id));
-  for (const taskId of removed) resetSavedPages(taskId);
-  tasks.value = tasks.value.filter((task) => !removed.has(task.id));
-  checkedTaskIds.value = checkedTaskIds.value.filter((id) => !removed.has(id));
-  if (!tasks.value.some((task) => task.id === selectedTaskId.value)) selectedTaskId.value = tasks.value[0]?.id ?? "";
+async function removeTasks(ids: string[]): Promise<void> {
+  if (queueRunning.value || queueStarting.value || exportBusy.value || historyBusy.value) return;
+  historyBusy.value = true;
+  const previous = [...tasks.value];
+  const selected = selectedTaskId.value;
+  try {
+    // Commit edits/pages first. A failed save must never clear the queue.
+    await flushSave();
+    const removed = new Set(ids);
+    tasks.value = tasks.value.filter(task => !removed.has(task.id));
+    if (!tasks.value.some(task => task.id === selectedTaskId.value)) selectedTaskId.value = tasks.value[0]?.id ?? "";
+    await flushSave();
+    checkedTaskIds.value = checkedTaskIds.value.filter(id => !removed.has(id));
+    feedback.value = "已从队列移除；识别结果保留在“识别历史”中。";
+  } catch (error) {
+    tasks.value = previous; selectedTaskId.value = selected;
+    showError(error);
+  } finally { historyBusy.value = false; }
+}
+
+function closeHistory(): void {
+  historyOpen.value = false;
+  void nextTick(() => document.querySelector<HTMLButtonElement>(".history-open-button")?.focus());
+}
+async function openHistory(): Promise<void> {
+  if (modelControlsBusy.value) return;
+  historyBusy.value = true;
+  try {
+    await flushSave();
+    historyEntries.value = await listHistory();
+    historyError.value = "";
+    historySelected.value = []; historyPage.value = 1; historyOpen.value = true;
+    await nextTick(); document.querySelector<HTMLInputElement>('.history-dialog input[type="search"]')?.focus();
+  } catch (error) { showError(error); }
+  finally { historyBusy.value = false; }
+}
+async function restoreHistoryEntry(id: string): Promise<void> {
+  if (historyBusy.value || queueRunning.value) return;
+  historyBusy.value = true; historyError.value = "";
+  try {
+    if (!tasks.value.some(task => task.id === id)) {
+      const entry = await readHistory(id);
+      tasks.value.push(entry.task);
+      for (const page of entry.task.result?.pages ?? []) queuePageSave(id, page);
+      textSettings.value = normalizeTextSettings(entry.settings.textSettings);
+      mergeCrossPageTables.value = entry.settings.merge;
+      exportTextVersion.value = entry.settings.exportTextVersion ?? "formatted";
+    }
+    selectedTaskId.value = id; exportScope.value = "current";
+    await flushSave(); historyOpen.value = false;
+    feedback.value = "已打开历史结果，可查看、复制或导出；无需重新识别。";
+  } catch (error) { historyError.value = error instanceof Error ? error.message : String(error); showError(error); }
+  finally { historyBusy.value = false; }
+}
+async function permanentlyDeleteHistory(): Promise<void> {
+  if (historyBusy.value || !historySelected.value.length) return;
+  const selected = historyEntries.value.filter(entry => historySelected.value.includes(entry.task.id));
+  const unexported = selected.filter(entry => entry.task.exportedRevision !== (entry.task.revision ?? 0)).length;
+  if (!window.confirm(`永久删除 ${selected.length} 个文件的识别结果，其中 ${unexported} 个未导出当前结果。\n此操作不可恢复，原始图片/PDF 不会删除。是否继续？`)) return;
+  historyBusy.value = true; historyError.value = "";
+  try {
+    await flushSave(); await deleteHistory(selected.map(entry => entry.task.id));
+    historyEntries.value = await listHistory(); historySelected.value = [];
+    historyPage.value = Math.min(historyPage.value, historyPageCount.value);
+  } catch (error) { historyError.value = error instanceof Error ? error.message : String(error); showError(error); }
+  finally { historyBusy.value = false; }
+}
+
+async function chooseAutoExportDirectory(): Promise<void> {
+  if (modelControlsBusy.value) return;
+  try {
+    const directory = await openLocalDialog({ directory: true, multiple: false, title: "选择自动导出文件夹" });
+    if (typeof directory === "string") { autoExportDirectory.value = directory; await flushSave(); }
+  } catch (error) { showError(error); }
+}
+async function exportCompletedTask(task: OcrTask, directory = autoExportDirectory.value): Promise<void> {
+  if (!task.result) return;
+  exportBusy.value = true;
+  const revision = task.revision ?? 0;
+  try {
+    if (!directory || !outputFormats().length) throw new Error("请先选择自动导出目录和格式");
+    if (!ocrSidecar.running && !(await startSidecar())) throw new Error("导出进程未就绪，请重试");
+    const output = projectText(task.result, textSettings.value, task.textEdited, exportTextVersion.value === "original");
+    const tables = displayTables(task.result, mergeCrossPageTables.value);
+    const response = await ocrSidecar.request<{count: number; exportedIds: string[]}>("export_results", {
+      directory, formats: outputFormats(),
+      textItems: [{ id: task.id, fileName: task.fileName, text: output.text, html: output.html, profile: task.result.profile, mode: task.resultType }],
+      tableItems: tables.length ? [{ fileName: task.fileName, tables, ids: [task.id], profile: task.result.profile, mode: task.resultType }] : [],
+      // Automatic export never overwrites and never waits for other image files.
+      options: { grouping: "separate", collision: "rename", prefix: exportPrefix.value, suffix: exportSuffix.value, name: exportName.value }
+    }, undefined, null);
+    if (!response.count || !response.exportedIds.includes(task.id)) throw new Error("所选格式没有生成文件；无表格时请选择 TXT 或 HTML");
+    if (revision === (task.revision ?? 0)) task.exportedRevision = revision;
+    task.exportError = undefined; task.exportDirectory = directory; task.exportedAt = new Date().toISOString();
+  } catch (error) {
+    task.exportError = error instanceof Error ? error.message : String(error);
+    if (directory) task.exportDirectory = directory;
+    feedback.value = `${task.fileName} 导出失败，识别结果仍保留，可单独重试导出。`;
+  } finally { exportBusy.value = false; await flushSave().catch(() => {}); }
+}
+async function retryTaskExport(task: OcrTask): Promise<void> {
+  if (modelControlsBusy.value) return;
+  let directory = autoExportDirectory.value || task.exportDirectory;
+  if (!directory) {
+    try {
+      const chosen = await openLocalDialog({directory: true, multiple: false, title: "选择重试导出的文件夹"});
+      if (typeof chosen !== "string") return;
+      directory = chosen;
+    } catch (error) { showError(error); return; }
+  }
+  await exportCompletedTask(task, directory);
 }
 
 function resetBatchIndices(): void {
@@ -785,7 +919,7 @@ async function copyDiagnostics(): Promise<void> {
     }
   }
   const diagnostics: DiagnosticInfo = {
-    appVersion: "0.13.0",
+    appVersion: "0.14.0",
     sidecarRunning: ocrSidecar.running,
     sidecarStderr: ocrSidecar.stderr ? "运行日志已省略，以免复制文档路径或识别相关输出" : "",
     ...remote
@@ -848,11 +982,21 @@ async function runQueue(): Promise<void> {
   if (pageValidation) await pageValidation;
   if (isPdf.value && !(await applyPageRange())) { feedback.value = "请先修正当前 PDF 的页码设置。"; return; }
   if (modelControlsBusy.value) return;
+  if (autoExport.value && (!autoExportDirectory.value || !outputFormats().length)) {
+    feedback.value = "启用自动导出后，请先选择导出目录和至少一种格式。"; return;
+  }
+  if (autoExport.value && recognitionMode.value === "text" && !exportTxt.value && !exportHtml.value) {
+    feedback.value = "普通文字无法生成 XLSX，请为自动导出选择 TXT 或 HTML。"; return;
+  }
   if (tasks.value.some(task => task.status === "queued" && task.result && !task.resumeEligible)
     && !window.confirm("等待任务中已有识别结果（可能包含手动校对）。重新识别将替换这些结果，是否继续？")) return;
   queueStarting.value = true;
   try {
     if (!ocrSidecar.running && !(await startSidecar())) return;
+    if (autoExport.value) await ocrSidecar.request("export_preview", {
+      directory: autoExportDirectory.value, formats: outputFormats(), textItems: [], tableItems: [],
+      options: { grouping: "separate", collision: "rename" }
+    });
     await validateTaskPaths();
     for (const task of tasks.value) if (task.status === "queued" && task.missing) {
       task.status = "failed";
@@ -895,6 +1039,7 @@ async function runQueue(): Promise<void> {
       task.status = "running";
       task.resultType = recognitionMode.value;
       task.error = undefined;
+      task.exportError = undefined;
       const previousResult = task.result;
       const previousTextEdited = task.textEdited;
       const resume = isPdfPath(task.path) && task.resumeEligible === true && canResumeResult(previousResult, {
@@ -1024,6 +1169,11 @@ async function runQueue(): Promise<void> {
           throw error;
         }
       }
+      // Persist recognition independently: export failure cannot turn a
+      // completed OCR task into a failed recognition task.
+      try { await flushSave(); }
+      catch { stopRequested.value = true; feedback.value = "保存结果失败，队列已停止。请先导出已有结果并检查磁盘空间。"; break; }
+      if (autoExport.value && task.status === "completed") await exportCompletedTask(task);
       activeTaskId = "";
 
       if (String(queueTransition.value) === "pausing") queuePaused.value = true;
@@ -1035,7 +1185,7 @@ async function runQueue(): Promise<void> {
     } else if (queuePaused.value) {
       status.value = "队列已暂停";
     } else {
-      status.value = `队列处理完成：成功 ${completedCount.value} 个，共 ${tasks.value.length} 个`;
+      status.value = `队列处理完成：识别成功 ${completedCount.value} 个，共 ${tasks.value.length} 个；导出失败 ${tasks.value.filter(task => task.exportError).length} 个。结果已保留，可从识别历史重新打开。`;
     }
   } catch (error) {
     showError(error);
@@ -1169,6 +1319,9 @@ function tableExportItems(): TableExportItem[] {
 async function exportSelectedFormats(): Promise<void> {
   if (!canExportSelectedFormats.value) return;
   exportBusy.value = true;
+  const attemptedTasks = [...exportableTasks.value];
+  let attemptedDirectory = "";
+  let attemptedWrite = false;
   try {
     const directory = await openLocalDialog({ directory: true, multiple: false, title: "选择导出文件夹" });
     if (typeof directory !== "string") return;
@@ -1190,16 +1343,23 @@ async function exportSelectedFormats(): Promise<void> {
     if (!preview.count) { status.value = `没有需要写入的文件（同名跳过 ${preview.skipped} 个）；未识别到表格的任务不会生成 XLSX。`; return; }
     const filenames = preview.files.filter((file) => file.action !== "skip").slice(0, 12).map((file) => file.name).join("\n");
     if (!window.confirm(`导出范围：${exportScopeLabel.value}（${exportableTasks.value.length} 个任务，包含部分完成结果）\n文本版本：${exportTextVersion.value === "original" ? "整理前" : "整理后（保留手动校对）"}\n格式：${outputFormats().join("、")}\n表格：${mergeCrossPageTables.value ? "合并连续页" : "按页拆分"}\n\n将生成 ${preview.count} 个文件，覆盖 ${preview.overwrites} 个，跳过 ${preview.skipped} 个。\n${preview.noTableCount} 个任务没有表格，不会生成 XLSX；文字模式支持 HTML。\n\n${filenames}${preview.count > 12 ? "\n……" : ""}\n\n是否导出？`)) return;
-    const response = await ocrSidecar.request<{ count: number; skipped: number; exportedIds: string[] }>(
+    attemptedDirectory = directory; attemptedWrite = true;
+    const response = await ocrSidecar.request<{ count: number; skipped: number; exportedIds: string[]; fullyExportedIds?: string[] }>(
       "export_results", payload, undefined, null
     );
-    for (const task of tasks.value) if (response.exportedIds.includes(task.id) && revisions.get(task.id) === (task.revision ?? 0)) {
+    for (const task of tasks.value) if ((response.fullyExportedIds ?? response.exportedIds).includes(task.id) && revisions.get(task.id) === (task.revision ?? 0)) {
       task.exportedRevision = task.revision ?? 0;
+      task.exportError = undefined; task.exportDirectory = directory; task.exportedAt = new Date().toISOString();
     }
     feedback.value = `已导出 ${response.count} 个文件：${directory}`;
     status.value = `已导出 ${response.count} 个文件，跳过 ${response.skipped} 个；位置：${directory}`;
     await flushSave().catch(() => {});
   } catch (error) {
+    if (attemptedWrite) for (const task of attemptedTasks) {
+      task.exportError = error instanceof Error ? error.message : String(error);
+      task.exportDirectory = attemptedDirectory;
+    }
+    await flushSave().catch(() => {});
     showError(error);
   } finally {
     exportBusy.value = false;
@@ -1367,13 +1527,13 @@ function showError(error: unknown): void {
         </div>
 
         <div class="step-card queue-card">
-          <div class="step-heading"><b>02</b><span>批量任务</span></div>
+          <div class="step-heading"><b>02</b><span>批量任务</span><button class="history-open-button" :disabled="modelControlsBusy" @click="openHistory">识别历史</button></div>
           <button class="file-picker" :disabled="setupBusy || queueStarting || exportBusy" @click="chooseFiles"><span class="plus">＋</span><span>添加图片或 PDF</span></button>
-          <div v-if="tasks.length" class="queue-toolbar"><span>{{ queuedCount }} 等待 · {{ checkedTaskIds.length }} 勾选</span><button :disabled="queueRunning || exportBusy" @click="clearFinished">清理已结束</button></div>
+          <div v-if="tasks.length" class="queue-toolbar"><span>{{ queuedCount }} 等待 · {{ checkedTaskIds.length }} 勾选</span><button :disabled="modelControlsBusy" @click="clearFinished">清理已结束（保留历史）</button></div>
           <div v-if="tasks.length" class="batch-actions">
             <button @click="selectAllTasks">全选 / 取消</button>
             <button :disabled="modelControlsBusy" @click="sortTasksNaturally">自然排序</button>
-            <button :disabled="!checkedTaskIds.length || exportBusy" @click="removeTasks(checkedTaskIds)">移除勾选</button>
+            <button :disabled="!checkedTaskIds.length || modelControlsBusy" @click="removeTasks(checkedTaskIds)">移除勾选</button>
             <button :disabled="!checkedTaskIds.length || queueRunning || exportBusy" @click="retryTasks(true)">重试勾选</button>
             <button :disabled="!failedCount || queueRunning || exportBusy" @click="retryTasks()">重试失败项</button>
           </div>
@@ -1383,6 +1543,7 @@ function showError(error: unknown): void {
               <button class="task-main" type="button" :aria-pressed="task.id === selectedTaskId" @click.stop="selectedTaskId = task.id">
                 <span class="task-name" :title="task.path">{{ task.fileName }}</span>
                 <small v-if="task.missing" class="missing-file">原文件不可访问，已存结果仍可导出</small>
+                <small v-if="task.result" :class="{'missing-file': task.exportError}" :title="task.exportDirectory">{{ exportState(task) }}</small>
                 <small v-if="task.pageRange">原文页码：{{ task.pageRange }}</small>
                 <small v-if="task.rotation">图片顺时针 {{ task.rotation }}°</small>
                 <small v-if="task.totalPages">
@@ -1395,8 +1556,9 @@ function showError(error: unknown): void {
               <div class="task-actions" @keydown.stop>
                 <button :disabled="queueRunning || exportBusy || tasks[0]?.id === task.id" aria-label="上移任务" @click.stop="moveTask(task, -1)">上移</button>
                 <button :disabled="queueRunning || exportBusy || tasks[tasks.length - 1]?.id === task.id" aria-label="下移任务" @click.stop="moveTask(task, 1)">下移</button>
-                <button v-if="task.status === 'failed' || task.status === 'cancelled'" :disabled="exportBusy" @click.stop="retryTask(task)">重试</button>
-                <button v-if="task.status !== 'running' && task.status !== 'paused'" :disabled="exportBusy" @click.stop="removeTask(task)">移除</button>
+                <button v-if="task.exportError" :disabled="modelControlsBusy" @click.stop="retryTaskExport(task)">重试导出</button>
+                <button v-if="task.status === 'failed' || task.status === 'cancelled'" :disabled="exportBusy || queueRunning" @click.stop="retryTask(task)">重试</button>
+                <button v-if="task.status !== 'running' && task.status !== 'paused'" :disabled="modelControlsBusy" @click.stop="removeTask(task)">移除</button>
               </div>
               <progress v-if="task.totalPages && (task.status === 'running' || task.status === 'paused')" :aria-label="`${task.fileName} 识别进度`" class="task-progress" :value="task.currentPage ?? 0" :max="task.totalPages"></progress>
             </div>
@@ -1410,9 +1572,21 @@ function showError(error: unknown): void {
           <p class="threshold-help">调高可能漏掉更多文字；下次 OCR 生效，文本层提取不受影响。</p>
           <input id="threshold" v-model.number="scoreThreshold" type="range" min="0" max="1" step="0.05" :disabled="modelControlsBusy" />
           <label v-if="recognitionMode === 'table'" class="merge-setting">
-            <input v-model="mergeCrossPageTables" type="checkbox" />
+            <input v-model="mergeCrossPageTables" type="checkbox" :disabled="modelControlsBusy" />
             <span>合并 PDF 或同批图片的连续表格</span>
           </label>
+          <div class="export-options">
+            <span>导出格式</span>
+            <label><input v-model="exportTxt" type="checkbox" :disabled="modelControlsBusy" />TXT</label>
+            <label><input v-model="exportXlsx" type="checkbox" :disabled="modelControlsBusy" />XLSX</label>
+            <label><input v-model="exportHtml" type="checkbox" :disabled="modelControlsBusy" />HTML</label>
+          </div>
+          <label class="merge-setting"><input v-model="autoExport" type="checkbox" :disabled="modelControlsBusy" />每个文件完成后自动导出</label>
+          <div v-if="autoExport" class="auto-export-settings">
+            <button :disabled="modelControlsBusy" @click="chooseAutoExportDirectory">选择自动导出目录</button>
+            <p class="export-directory" :title="autoExportDirectory">{{ autoExportDirectory || '尚未选择目录' }}</p>
+            <p>按文件导出，重名自动编号；跨图片合并请使用手动导出。采用下方选择的文本版本与文件名前后缀。</p>
+          </div>
           <button v-if="!queueRunning && !queuePaused" class="primary-button" :disabled="setupBusy || queueStarting || exportBusy || !queuedCount" @click="runQueue">开始批量识别</button>
           <div v-else class="control-grid">
             <button v-if="!queuePaused" class="secondary-button" :disabled="!!queueTransition || phase === 'preparing'" @click="pauseQueue">{{ queueTransition === 'pausing' ? '正在暂停……' : '暂停' }}</button>
@@ -1423,29 +1597,23 @@ function showError(error: unknown): void {
           <button v-if="queueRunning" class="force-button" @click="forceStopQueue">长时间无响应？强制停止</button>
           <template v-if="tasks.length">
           <div class="export-targets">
-            <label>导出范围<select v-model="exportScope" :disabled="exportBusy" aria-label="导出范围"><option value="all">全部已有结果</option><option value="current">当前文件</option><option value="checked">勾选任务</option></select></label>
-            <label>文本版本<select v-model="exportTextVersion" :disabled="exportBusy" aria-label="导出文本版本"><option value="formatted">整理后（含校对）</option><option value="original">整理前</option></select></label>
-          </div>
-          <div class="export-options">
-            <span>导出格式</span>
-            <label><input v-model="exportTxt" type="checkbox" />TXT</label>
-            <label><input v-model="exportXlsx" type="checkbox" />XLSX</label>
-            <label><input v-model="exportHtml" type="checkbox" />HTML</label>
+            <label>导出范围<select v-model="exportScope" :disabled="exportBusy || queueRunning" aria-label="导出范围"><option value="all">全部已有结果</option><option value="current">当前文件</option><option value="checked">勾选任务</option></select></label>
+            <label>文本版本<select v-model="exportTextVersion" :disabled="exportBusy || queueRunning" aria-label="导出文本版本"><option value="formatted">整理后（含校对）</option><option value="original">整理前</option></select></label>
           </div>
           <details class="export-settings">
             <summary>导出规则 · 预计 {{ exportEstimate }} 个文件</summary>
-            <label>文件组织<select v-model="exportGrouping" :disabled="exportBusy"><option value="separate">分别导出（同批图片表格合为一份）</option><option value="combined">全部合并为一份 / 每种格式</option></select></label>
-            <label>同名文件<select v-model="exportCollision" :disabled="exportBusy"><option value="rename">自动编号，不覆盖</option><option value="skip">跳过已有文件</option><option value="overwrite">覆盖（导出前再次确认）</option></select></label>
-            <label v-if="exportGrouping === 'combined'">合并文件名<input v-model="exportName" :disabled="exportBusy" maxlength="100" /></label>
-            <label>文件名前缀<input v-model="exportPrefix" :disabled="exportBusy" placeholder="例如 {date}_" maxlength="100" /></label>
-            <label>文件名后缀<input v-model="exportSuffix" :disabled="exportBusy" placeholder="例如 _{profile}_{mode}" maxlength="100" /></label>
+            <label>文件组织<select v-model="exportGrouping" :disabled="exportBusy || queueRunning"><option value="separate">分别导出（同批图片表格合为一份）</option><option value="combined">全部合并为一份 / 每种格式</option></select></label>
+            <label>同名文件<select v-model="exportCollision" :disabled="exportBusy || queueRunning"><option value="rename">自动编号，不覆盖</option><option value="skip">跳过已有文件</option><option value="overwrite">覆盖（导出前再次确认）</option></select></label>
+            <label v-if="exportGrouping === 'combined'">合并文件名<input v-model="exportName" :disabled="exportBusy || queueRunning" maxlength="100" /></label>
+            <label>文件名前缀<input v-model="exportPrefix" :disabled="exportBusy || queueRunning" placeholder="例如 {date}_" maxlength="100" /></label>
+            <label>文件名后缀<input v-model="exportSuffix" :disabled="exportBusy || queueRunning" placeholder="例如 _{profile}_{mode}" maxlength="100" /></label>
             <p>支持 {date} 日期、{profile} 档位、{mode} 模式。无表格不生成 XLSX；文字模式可导出 HTML。</p>
           </details>
           <button class="secondary-button export-button" :disabled="!canExportSelectedFormats" @click="exportSelectedFormats">{{ exportBusy ? "正在导出……" : `导出所选格式（${exportEstimate}）` }}</button>
           <p class="export-hint" v-if="exportScope !== 'all' && !exportableTasks.length">此范围暂无可导出结果。</p>
           <p v-if="!exportFormatSelected" class="export-hint">请至少选择一种格式。</p>
           </template>
-          <p v-else class="pause-note">添加文件后，可选择导出范围、文本版本与格式。</p>
+          <p v-else class="pause-note">识别结果自动保留在本机历史；导出后才会生成外部文件。</p>
           <p v-if="tasks.length" class="pause-note">暂停和普通取消会在当前页识别结束后生效。</p>
         </div>
       </aside>
@@ -1587,6 +1755,23 @@ function showError(error: unknown): void {
       </section>
     </section>
 
+    <div v-if="historyOpen" class="history-backdrop">
+      <section class="history-dialog" role="dialog" aria-modal="true" aria-labelledby="history-title">
+        <header><h2 id="history-title">识别历史</h2><button :disabled="historyBusy" @click="closeHistory">关闭历史</button></header>
+        <p>清理队列不会删除结果。打开后可查看、复制或导出；原始文件已移动也可查看。历史不会自动清理。</p>
+        <p v-if="historyError" class="save-error" role="alert">{{ historyError }}</p>
+        <input v-model="historySearch" type="search" placeholder="按文件名查找" aria-label="查找识别历史" />
+        <div class="history-list">
+          <div v-for="entry in visibleHistory" :key="entry.task.id" class="history-row">
+            <input v-model="historySelected" type="checkbox" :value="entry.task.id" :disabled="historyBusy || tasks.some(task => task.id === entry.task.id)" :aria-label="`选择历史 ${entry.task.fileName}`" />
+            <div><strong>{{ entry.task.fileName }}</strong><small>{{ new Date(entry.savedAt).toLocaleString() }} · {{ entry.task.result?.pageCount ?? 0 }} 页 · {{ exportState(entry.task) }}</small><small>{{ tasks.some(task => task.id === entry.task.id) ? '在当前队列中；移除后才可永久删除' : '已保留，可恢复到队列' }}</small></div>
+            <button :disabled="historyBusy" @click="restoreHistoryEntry(entry.task.id)">打开结果</button>
+          </div>
+          <p v-if="!filteredHistory.length">暂无匹配的识别记录。</p>
+        </div>
+        <footer><button :disabled="historyBusy || historyPage <= 1" @click="historyPage--">上一页</button><span>{{ historyPage }} / {{ historyPageCount }} · 共 {{ filteredHistory.length }} 项</span><button :disabled="historyBusy || historyPage >= historyPageCount" @click="historyPage++">下一页</button><button class="danger-button" :disabled="historyBusy || !historySelected.length" @click="permanentlyDeleteHistory">永久删除勾选（{{ historySelected.length }}）</button></footer>
+      </section>
+    </div>
     <div v-if="feedback" class="action-feedback" role="status"><span>{{ feedback }}</span><button aria-label="关闭提示" @click="feedback = ''">关闭</button></div>
     <footer role="status" aria-live="polite" :class="['statusbar', { error: phase === 'error' }]" :title="status">
       <span class="status-dot"></span>

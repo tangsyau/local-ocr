@@ -205,5 +205,8 @@ def export_results(payload: dict[str, Any]) -> dict[str, Any]:
                         target.unlink(missing_ok=True)
                         raise
             exported.append({"name": target.name, "format": item["format"], "ids": item["ids"]})
+    skipped_ids = {task_id for item in planned if item["action"] == "skip" for task_id in item["ids"] if task_id}
+    written_ids = list(dict.fromkeys(task_id for item in exported for task_id in item["ids"] if task_id))
     return {**summary, "count": len(exported), "files": exported,
+            "fullyExportedIds": [task_id for task_id in written_ids if task_id not in skipped_ids],
             "exportedIds": list(dict.fromkeys(task_id for item in exported for task_id in item["ids"] if task_id))}
