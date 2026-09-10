@@ -360,3 +360,16 @@ button.task-main { border: 0; background: transparent; padding: 0; text-align: l
   .settings-card .export-options { margin-top: 5px; padding-block: 5px; }
   .settings-card > .merge-setting { margin-block: 5px; }
 }
+
+/* 1080p at 150% scaling provides only 720 CSS pixels of height.
+   Keep control text readable; compact the descriptive option cards instead. */
+@media (max-height: 760px) {
+  .sidebar .mode-options small, .sidebar .model-options small {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+  }
+  .sidebar .mode-options label, .sidebar .model-options label { align-items: center; min-height: 30px; padding-block: 4px; }
+  .sidebar .mode-options input, .sidebar .model-options input { margin-top: 0; }
+  .sidebar .step-card { padding-bottom: 4px; margin-bottom: 4px; }
+  .sidebar .queue-empty, .sidebar .pause-note { margin-top: 5px; }
+}

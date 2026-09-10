@@ -919,7 +919,7 @@ async function copyDiagnostics(): Promise<void> {
     }
   }
   const diagnostics: DiagnosticInfo = {
-    appVersion: "0.14.0",
+    appVersion: "0.14.1",
     sidecarRunning: ocrSidecar.running,
     sidecarStderr: ocrSidecar.stderr ? "运行日志已省略，以免复制文档路径或识别相关输出" : "",
     ...remote
@@ -1442,22 +1442,22 @@ function showError(error: unknown): void {
         <div class="step-card">
           <div class="step-heading"><b>01</b><span>选择识别方式</span></div>
           <div class="mode-options">
-            <label :class="{ selected: recognitionMode === 'text' }">
+            <label title="输出连续文本与文字框" :class="{ selected: recognitionMode === 'text' }">
               <input v-model="recognitionMode" type="radio" value="text" :disabled="modelControlsBusy" @change="modelChanged" />
               <span><strong>普通文字</strong><small>输出连续文本与文字框</small></span>
             </label>
-            <label :class="{ selected: recognitionMode === 'table' }">
+            <label title="恢复行列和合并单元格，可导出 XLSX" :class="{ selected: recognitionMode === 'table' }">
               <input v-model="recognitionMode" type="radio" value="table" :disabled="modelControlsBusy" @change="modelChanged" />
               <span><strong>表格与文字</strong><small>恢复行列和合并单元格，可导出 XLSX</small></span>
             </label>
           </div>
           <p class="option-caption">文字模型档位</p>
           <div class="model-options">
-            <label :class="{ selected: modelProfile === 'fast' }">
+            <label title="轻量模型，适合批量普通文档" :class="{ selected: modelProfile === 'fast' }">
               <input v-model="modelProfile" type="radio" value="fast" :disabled="modelControlsBusy" @change="modelChanged" />
               <span><strong>快速</strong><small>轻量模型，适合批量普通文档</small></span>
             </label>
-            <label :class="{ selected: modelProfile === 'accurate' }">
+            <label title="更大更慢，适合小字和复杂背景" :class="{ selected: modelProfile === 'accurate' }">
               <input v-model="modelProfile" type="radio" value="accurate" :disabled="modelControlsBusy" @change="modelChanged" />
               <span><strong>高精度</strong><small>更大更慢，适合小字和复杂背景</small></span>
             </label>

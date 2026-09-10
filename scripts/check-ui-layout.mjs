@@ -86,10 +86,11 @@ try {
       const dimensions = await page.evaluate(() => {
         const sidebar = document.querySelector(".sidebar");
         return { documentWidth: document.documentElement.scrollWidth, width: innerWidth,
+          sidebarHeight: sidebar.clientHeight, sidebarContentHeight: sidebar.scrollHeight,
           sidebarFits: sidebar.scrollHeight <= sidebar.clientHeight + 2 };
       });
       assert.ok(dimensions.documentWidth <= dimensions.width + 2, "app overflows horizontally");
-      if (screenWidth === 1920) assert.ok(dimensions.sidebarFits, `1080p initial sidebar overflows at ${scale}`);
+      if (screenWidth === 1920) assert.ok(dimensions.sidebarFits, `1080p initial sidebar overflows at ${scale}: ${JSON.stringify(dimensions)}`);
       const settingsLayout = await page.evaluate(() => {
         const panel = document.querySelector("details.text-settings");
         const fields = [...document.querySelectorAll(".text-setting-field")];
@@ -210,7 +211,7 @@ try {
         console.error(`Layout failed: ${screenWidth}x${screenHeight} / ${scale*100}%`);
         await page.screenshot({path:path.join(screenshots,`${label}-failed.png`)}).catch(()=>{});
         const geometry = await page.evaluate(() => Object.fromEntries(
-          ['.content-grid','.preview-panel','.preview-content','.document-controls','.rotation-stage','.rotation-box','.result-panel'].map(selector => {
+          ['.sidebar','.sidebar > .step-card:first-child','.queue-card','.settings-card','.content-grid','.preview-panel','.preview-content','.document-controls','.rotation-stage','.rotation-box','.result-panel'].map(selector => {
             const element = document.querySelector(selector);
             if (!element) return [selector,null];
             const box = element.getBoundingClientRect();
