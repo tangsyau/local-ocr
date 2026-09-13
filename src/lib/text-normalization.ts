@@ -9,12 +9,44 @@ export interface NormalizedText { text: string; offsets: number[] }
 function protectedMask(text: string): Uint8Array {
   const mask = new Uint8Array(text.length);
   // Keep explicit code, URLs, email addresses, paths, filenames and versions intact.
-  const pattern = /```[\s\S]*?(?:```|$)|`[^`\n]*`|https?:\/\/[^\s<>"'，。！？；（）「」]+|www\.[^\s<>"'，。！？；（）「」]+|[\w.+-]+@[\w\u3400-\u9fff.-]+\.[A-Za-z]{2,}|[A-Za-z]:\\[^\r\n，。；！？]+|(?:\/[\w.-]+){2,}|\b[vV]?\d+(?:\.\d+){1,}(?:[-+][\w.-]+)?\b|[\w\u3400-\u9fff-]+\.(?:pdf|txt|html?|json|csv|xlsx?|docx?|png|jpe?g|exe)\b/gu;
+  const pattern = /```[\s\S]*?(?:```|$)|`[^`\n]*`|https?:\/\/[^\s<>"'，。！？；（）「」]+|www\.[^\s<>"'，。！？；（）「」]+|[\w.+-]+@[\w\u3400-\u9fff.-]+\.[A-Za-z]{2,}|[A-Za-z]:\\[^\r\n，。；！？]+|(?:\/[\w.,@%+~-]+){2,}|\b[vV]?\d+(?:\.\d+){1,}(?:[-+][\w.-]+)?\b|[\w\u3400-\u9fff-]+\.(?:pdf|txt|html?|json|csv|xlsx?|docx?|png|jpe?g|exe)\b/gu;
   for (const m of text.matchAll(pattern)) mask.fill(1, m.index!, m.index! + m[0].length);
+  // Function-call syntax is protected even without backticks; include nested calls.
+  for (const m of text.matchAll(/\b[A-Za-z_$][\w.$]*\(/g)) {
+    if (mask[m.index!]) continue;
+    let depth = 1, end = m.index! + m[0].length;
+    let quote = "";
+    for (; end < text.length && text[end] !== "\n" && text[end] !== "\r"; end++) {
+      if (quote) {
+        if (text[end] === "\\") { end++; continue; }
+        if (text[end] === quote) quote = "";
+        continue;
+      }
+      if (text[end] === '"' || text[end] === "'" || text[end] === "`") { quote = text[end]; continue; }
+      if (text[end] === "(") depth++;
+      if (text[end] === ")" && --depth === 0) { mask.fill(1, m.index!, end + 1); break; }
+    }
+  }
   return mask;
 }
 
+function englishLeft(text: string, end: number): boolean {
+  return /[A-Za-z][*_"'”’\])]*$/.test(text.slice(Math.max(0, end - 24), end));
+}
+
 export function normalizeWithOffsets(value: string): NormalizedText {
+  let emphasisSource = "";
+  let emphasisStarts = new Set<number>();
+  function englishRight(source: string, start: number): boolean {
+    if (/^[A-Za-z0-9]/.test(source.slice(start, start + 1))) return true;
+    if (!/^[*_]{1,3}[A-Za-z0-9]/.test(source.slice(start, start + 4))) return false;
+    if (emphasisSource !== source) {
+      emphasisSource = source; emphasisStarts = new Set();
+      for (const match of source.matchAll(/(\*{1,3}|_{1,3})(?=\S)([^\r\n]*?\S)\1/g)) emphasisStarts.add(match.index!);
+    }
+    // Add before opening emphasis, never between punctuation and a closing marker.
+    return emphasisStarts.has(start);
+  }
   let text = value;
   let offsets = Array.from({ length: value.length + 1 }, (_, i) => i);
   function apply(edits: Edit[]): void {
@@ -118,6 +150,21 @@ export function normalizeWithOffsets(value: string): NormalizedText {
     if (/[，。！？、；：）]/u.test(before) && eastAsian.test(after)) return '';
     if (latin.test(before) && latin.test(after)) return ' ';
     return m[0];
+  });
+  // Only horizontal ASCII spaces: do not consume paragraph boundaries or tabs.
+  replace(/ +(?=[,.;:!?])/g, m => {
+    return englishLeft(text, m.index!) ? "" : m[0];
+  });
+  replace(/ +/g, m => {
+    const start = m.index!, end = start + m[0].length;
+    const prefix = text.slice(Math.max(0, start - 24), start);
+    const left = englishLeft(text, start) || /[A-Za-z][*_"'”’\])]*[,.;:!?]+$/.test(prefix);
+    return left && englishRight(text, end) ? " " : m[0];
+  });
+  replace(/[,;!?]+/g, m => {
+    const start = m.index!, end = start + m[0].length;
+    // No inferred spacing for periods/colons/quotes/brackets, or numeric separators.
+    return englishLeft(text, start) && englishRight(text, end) ? m[0] + " " : m[0];
   });
   replace(/\n{3,}/g, () => '\n\n');
   return { text, offsets };

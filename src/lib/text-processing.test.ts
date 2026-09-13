@@ -28,6 +28,41 @@ describe("language-aware text projection",()=>{
     expect(normalizeSmartText(input)).toBe(expected);
     expect(normalizeSmartText(expected)).toBe(expected);
   });
+  it.each([
+    ['Hello ,world!Next', 'Hello, world! Next'],
+    ['Plato, *Phaedo*, 70c–72e', 'Plato, *Phaedo*, 70c–72e'],
+    ['Plato,*Phaedo*,70c–72e', 'Plato, *Phaedo*, 70c–72e'],
+    ['Plato,   **Phaedo**,   70c–72e', 'Plato, **Phaedo**, 70c–72e'],
+    ['An _English_   phrase', 'An _English_ phrase'],
+    ['Wait?!Next;then,finish', 'Wait?! Next; then, finish'],
+    ['word . Next : example ; test ? Yes !', 'word. Next: example; test? Yes!'],
+    ['English   text', 'English text'],
+    ['*Hello,*World', '*Hello,*World'],
+    ['*Hello,* **world**', '*Hello,* **world**'],
+    ['3.14 / 1,000 / 12:30 / func(a,b)', '3.14 / 1,000 / 12:30 / func(a,b)'],
+    ['Call outer(inner(a,b),"x,y") now', 'Call outer(inner(a,b),"x,y") now'],
+    ['`Hello ,world` and https://example.com/a,b?x=y', '`Hello ,world` and https://example.com/a,b?x=y'],
+    ['Email a@example.com;next', 'Email a@example.com; next'],
+    ['See /usr/local/a,b/file.txt', 'See /usr/local/a,b/file.txt'],
+    ['Hello.World Time:12:30 Name:Value', 'Hello.World Time:12:30 Name:Value'],
+    ['Hello,\nworld!\nNext', 'Hello,\nworld!\nNext'],
+    ['Hello,  \n  world', 'Hello,\n  world'],
+    ['他说，Hello,world!', '他说，Hello, world!'],
+  ])('handles English spacing conservatively and idempotently: %s', (input, expected) => {
+    expect(normalizeSmartText(input)).toBe(expected);
+    expect(normalizeSmartText(expected)).toBe(expected);
+  });
+  it('keeps Ruby offsets and manual corrections intact when English spaces are inserted', () => {
+    const text='Hello,world 薔薇';
+    const start=Array.from(text).indexOf('薔');
+    const b={...block(text),ruby:[{start,end:start+2,text:'ばら'}]};
+    const r=result([page([b])]), before=JSON.stringify(r);
+    expect(projectText(r,{...defaults,rubyFormat:'ruby'}).html).toContain('Hello, world <ruby>薔薇<rt>ばら</rt></ruby>');
+    expect(projectText(r,defaults,false,true).text).toBe(text);
+    const edited={...r,text:'My , own correction',editedPageCount:1};
+    expect(projectText(edited,defaults,true).text).toBe('My , own correction');
+    expect(JSON.stringify(r)).toBe(before);
+  });
   it('joins the reported short continuation while preserving the following paragraph', () => {
     const first='2是我们的思想家、我们的艺术家和将军们造就了我们的时代，无论是好';
     const rest=['今天，没有人会认为阅读莎士比亚的作品，或沉思米开朗基罗的创',
