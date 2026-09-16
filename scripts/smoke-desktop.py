@@ -105,6 +105,8 @@ def main() -> int:
                     raise RuntimeError("Packaged sidecar version does not match the source version")
                 if not report.get("sidecar") or report.get("width", 0) < 300 or report.get("height", 0) < 300:
                     raise RuntimeError(f"Invalid desktop handshake: {report}")
+                if report.get("textProcessing") is not True:
+                    raise RuntimeError("Text cleanup failed inside the packaged WebView")
                 if report["height"] >= 850 and not report.get("sidebarFits"):
                     raise RuntimeError("Initial sidebar overflows a full-size desktop window")
                 time.sleep(1)

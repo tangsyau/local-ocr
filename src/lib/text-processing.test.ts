@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { defaultTextSettings as defaults, projectText, normalizeTextSettings, normalizeSmartText } from "./text-processing";
+import { defaultTextSettings as defaults, projectText, normalizeTextSettings, normalizeSmartText, verifyTextProcessingRuntime } from "./text-processing";
 import { canResumeResult, finalizeResult } from "./result-state";
 import type { OcrBlock, OcrPage } from "./types";
 
@@ -8,6 +8,20 @@ const page=(blocks:OcrBlock[],index=0):OcrPage=>({schemaVersion:1,pageIndex:inde
 const result=(pages:OcrPage[])=>finalizeResult({resultType:"text"},pages);
 
 describe("language-aware text projection",()=>{
+  it("cleans and joins text without String.matchAll on legacy engines", () => {
+    const descriptor = Object.getOwnPropertyDescriptor(String.prototype, "matchAll")!;
+    Object.defineProperty(String.prototype, "matchAll", { ...descriptor, value: undefined });
+    try {
+      expect(verifyTextProcessingRuntime()).toBe(true);
+      const r = result([page([block("中文 , 测试"), block("继续正文。", 126)])]);
+      expect(projectText(r, defaults).text).toBe("中文，测试继续正文。");
+      expect(projectText(r, defaults, false, true).text).toBe("中文 , 测试\n继续正文。");
+      expect(normalizeSmartText("Plato,*Phaedo*,70c–72e")).toBe("Plato, *Phaedo*, 70c–72e");
+      expect(normalizeSmartText("call(a,b) Hello,world")).toBe("call(a,b) Hello, world");
+    } finally {
+      Object.defineProperty(String.prototype, "matchAll", descriptor);
+    }
+  });
   it.each([
     ['1.我们几乎不会说一个完全没有历史知识的人是“受过教育”的，', '1．我们几乎不会说一个完全没有历史知识的人是“受过教育”的，'],
     ['2. 下一项\n3.14 是小数\n1.2.3 版本', '2． 下一项\n3.14 是小数\n1.2.3 版本'],

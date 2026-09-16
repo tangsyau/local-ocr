@@ -102,6 +102,11 @@ export interface ModelCacheStatus {
 }
 
 export interface DiagnosticInfo {
+  textProcessing?: {
+    runtimeCheck: boolean; webkitGtk40Build: boolean; textMode: string;
+    rawView: boolean; edited: boolean; resultType: string;
+    pageCount: number; layoutPageCount: number;
+  };
   appVersion: string;
   sidecarRunning: boolean;
   sidecarStderr: string;

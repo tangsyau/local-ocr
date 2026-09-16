@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import TableResultViewer from "./components/TableResultViewer.vue";
 import ImagePreview from "./components/ImagePreview.vue";
-import { defaultTextSettings, normalizeTextSettings, projectText, type TextSettings } from "./lib/text-processing";
+import { defaultTextSettings, normalizeTextSettings, projectText, verifyTextProcessingRuntime, type TextSettings } from "./lib/text-processing";
 import { ocrSidecar, SidecarRequestError } from "./lib/sidecar";
 import { displayTables, imageBatchTables, mergeTablePages, tableToTsv } from "./lib/table-results";
 import { naturalPathCompare, naturalSortPaths } from "./lib/file-order";
@@ -398,7 +398,8 @@ async function reportPackagedUiReady(): Promise<void> {
   await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
   const sidebar = document.querySelector<HTMLElement>(".sidebar");
   await ocrSidecar.request("ui_smoke_ready", { width: innerWidth, height: innerHeight,
-    sidebarFits: sidebar ? sidebar.scrollHeight <= sidebar.clientHeight + 2 : false });
+    sidebarFits: sidebar ? sidebar.scrollHeight <= sidebar.clientHeight + 2 : false,
+    textProcessing: verifyTextProcessingRuntime() });
 }
 
 watch(selectedTaskId, () => {
@@ -918,11 +919,19 @@ async function copyDiagnostics(): Promise<void> {
       console.warn("读取 sidecar 诊断信息失败", error);
     }
   }
+  let runtimeCheck = false;
+  try { runtimeCheck = verifyTextProcessingRuntime(); } catch { /* report failure without document contents */ }
   const diagnostics: DiagnosticInfo = {
-    appVersion: "0.14.2",
+    appVersion: "0.14.3",
     sidecarRunning: ocrSidecar.running,
     sidecarStderr: ocrSidecar.stderr ? "运行日志已省略，以免复制文档路径或识别相关输出" : "",
-    ...remote
+    ...remote,
+    textProcessing: { runtimeCheck, webkitGtk40Build: isWebkitGtk40Build,
+      textMode: textSettings.value.textMode, rawView: rawTextView.value,
+      edited: selectedTask.value?.textEdited === true,
+      resultType: selectedResult.value?.resultType ?? "none",
+      pageCount: selectedResult.value?.pages.length ?? 0,
+      layoutPageCount: selectedResult.value?.pages.filter(p => p.schemaVersion && p.blocks.length && !p.tables.length).length ?? 0 }
   };
   await copyText(JSON.stringify(diagnostics, null, 2), "诊断信息");
 }

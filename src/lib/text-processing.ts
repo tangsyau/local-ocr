@@ -233,3 +233,18 @@ export function projectText(result: OcrResult, settings: TextSettings, edited = 
   if (settings.rubyFormat !== "ignore" && result.pages.some(p=>p.blocks.some(b=>b.ruby?.some(r=>r.alignment === "estimated")))) warnings.push("部分注音按位置估算对应范围，请校对汉字与注音的绑定。");
   return {text,html,raw,warnings};
 }
+
+// Runs inside the packaged WebView during CI, not just in Node or Chromium.
+export function verifyTextProcessingRuntime(): boolean {
+  const texts = ["中文 , 测试", "继续正文。"];
+  const raw = texts.join("\n");
+  const page: OcrPage = { schemaVersion: 1, pageIndex: 0, width: 600, height: 800,
+    source: "ocr", text: raw, rawText: raw, tables: [],
+    blocks: texts.map((text, i) => ({ text, score: .9, polygon: [],
+      box: [20, 100 + i * 26, 420, 120 + i * 26], fontSize: 20, direction: "horizontal" })) };
+  const result = { resultType: "text", text: raw, pages: [page], pageCount: 1,
+    totalPageCount: 1, selectedPageCount: 1 } as OcrResult;
+  return projectText(result, defaultTextSettings).text === "中文，测试继续正文。"
+    && projectText(result, defaultTextSettings, false, true).text === raw
+    && normalizeWithOffsets("Plato,*Phaedo*,70c–72e").text === "Plato, *Phaedo*, 70c–72e";
+}

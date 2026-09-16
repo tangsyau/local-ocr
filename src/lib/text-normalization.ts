@@ -6,13 +6,27 @@ const latin = /[A-Za-z0-9]/u;
 interface Edit { start: number; end: number; text: string }
 export interface NormalizedText { text: string; offsets: number[] }
 
+// Avoid String.matchAll: the legacy desktop engine may not implement it.
+// Clone the expression so iteration never mutates caller-owned lastIndex.
+function* matches(text: string, pattern: RegExp): Generator<RegExpExecArray> {
+  const regex = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : pattern.flags + "g");
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(text)) !== null) {
+    yield match;
+    if (!match[0].length) {
+      const point = text.codePointAt(regex.lastIndex);
+      regex.lastIndex += regex.unicode && point !== undefined && point > 0xffff ? 2 : 1;
+    }
+  }
+}
+
 function protectedMask(text: string): Uint8Array {
   const mask = new Uint8Array(text.length);
   // Keep explicit code, URLs, email addresses, paths, filenames and versions intact.
   const pattern = /```[\s\S]*?(?:```|$)|`[^`\n]*`|https?:\/\/[^\s<>"'，。！？；（）「」]+|www\.[^\s<>"'，。！？；（）「」]+|[\w.+-]+@[\w\u3400-\u9fff.-]+\.[A-Za-z]{2,}|[A-Za-z]:\\[^\r\n，。；！？]+|(?:\/[\w.,@%+~-]+){2,}|\b[vV]?\d+(?:\.\d+){1,}(?:[-+][\w.-]+)?\b|[\w\u3400-\u9fff-]+\.(?:pdf|txt|html?|json|csv|xlsx?|docx?|png|jpe?g|exe)\b/gu;
-  for (const m of text.matchAll(pattern)) mask.fill(1, m.index!, m.index! + m[0].length);
+  for (const m of matches(text, pattern)) mask.fill(1, m.index!, m.index! + m[0].length);
   // Function-call syntax is protected even without backticks; include nested calls.
-  for (const m of text.matchAll(/\b[A-Za-z_$][\w.$]*\(/g)) {
+  for (const m of matches(text, /\b[A-Za-z_$][\w.$]*\(/g)) {
     if (mask[m.index!]) continue;
     let depth = 1, end = m.index! + m[0].length;
     let quote = "";
@@ -42,7 +56,7 @@ export function normalizeWithOffsets(value: string): NormalizedText {
     if (!/^[*_]{1,3}[A-Za-z0-9]/.test(source.slice(start, start + 4))) return false;
     if (emphasisSource !== source) {
       emphasisSource = source; emphasisStarts = new Set();
-      for (const match of source.matchAll(/(\*{1,3}|_{1,3})(?=\S)([^\r\n]*?\S)\1/g)) emphasisStarts.add(match.index!);
+      for (const match of matches(source, /(\*{1,3}|_{1,3})(?=\S)([^\r\n]*?\S)\1/g)) emphasisStarts.add(match.index!);
     }
     // Add before opening emphasis, never between punctuation and a closing marker.
     return emphasisStarts.has(start);
@@ -69,7 +83,7 @@ export function normalizeWithOffsets(value: string): NormalizedText {
   }
   function replace(pattern: RegExp, replacement: (m: RegExpMatchArray) => string): void {
     const mask = protectedMask(text), edits: Edit[] = [];
-    for (const m of text.matchAll(pattern)) {
+    for (const m of matches(text, pattern)) {
       const start = m.index!, end = start + m[0].length;
       if (mask.subarray(start, end).some(Boolean)) continue;
       const next = replacement(m);
