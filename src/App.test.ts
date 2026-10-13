@@ -84,7 +84,7 @@ describe("text projection controls", () => {
     expect(settings.attributes("open")).toBeDefined();
     expect(settings.findAll(".text-setting-field")).toHaveLength(5);
     expect(settings.findAll(".text-setting-name").map((item) => item.text())).toEqual([
-      "PDF 文字来源", "文本整理", "跨页正文", "日语注音", "注音输出"
+      "PDF 文字来源", "文本整理", "跨页合并", "日语注音", "注音输出"
     ]);
     expect(settings.findAll("select")).toHaveLength(3);
   });
@@ -330,6 +330,26 @@ describe("0.13 state and output regressions", () => {
       : method === "export_results" ? Promise.resolve({count:1,skipped:0,exportedIds:params.textItems.map((t:any)=>t.id)}) : original(method,params,event));
     return r;
   }
+  it("cleans restored table preview and export without OCR and keeps raw switching", async () => {
+    const r = savedTasks();
+    const t = {pageIndex:0,endPageIndex:0,tableIndex:0,sourceTableCount:1,score:1,box:[],html:"",rows:[
+      [{row:0,column:0,rowSpan:1,colSpan:1,text:"中 文 ( 说明 )",box:[]}]]};
+    r.resultType = "table"; r.tables = [t]; r.pages[0].tables = [t]; r.rawTableCount = 1; r.tableCount = 1;
+    wrapper=mount(App); await flushPromises();
+    await button("表格 1").trigger("click");
+    expect(wrapper.find("td").text()).toBe("中文（说明）");
+    await button("整理前").trigger("click");
+    expect(wrapper.find("td").text()).toBe("中 文 ( 说明 )");
+    mock.open.mockResolvedValue("/output"); await button("导出所选格式").trigger("click"); await flushPromises();
+    const payload=mock.request.mock.calls.find(c=>c[0]==="export_preview")?.[1];
+    expect(payload.tableItems[0].tables[0].rows[0][0].text).toBe("中文（说明）");
+    expect(t.rows[0][0].text).toBe("中 文 ( 说明 )");
+    await wrapper.find('[aria-label="导出文本版本"]').setValue("original");
+    await button("导出所选格式").trigger("click"); await flushPromises();
+    const rawPayload=mock.request.mock.calls.filter(c=>c[0]==="export_preview").at(-1)?.[1];
+    expect(rawPayload.tableItems[0].tables[0].rows[0][0].text).toBe("中 文 ( 说明 )");
+    expect(mock.request.mock.calls.some(c=>c[0]==="recognize")).toBe(false);
+  });
   it("blocks recognition rather than silently using the old range after invalid input", async()=>{
     const original=mock.request.getMockImplementation()!;
     mock.request.mockImplementation((method, params, event)=>method === "document_info" && params.pageRange === "bad"

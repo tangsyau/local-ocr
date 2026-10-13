@@ -185,3 +185,9 @@ export function normalizeWithOffsets(value: string): NormalizedText {
 }
 
 export function normalizeSmartText(value: string): string { return normalizeWithOffsets(value).text; }
+
+// Table separators are structural. Clean each line/cell without joining them.
+export function normalizeTableText(value: string): string {
+  return value.split(/(\r\n|\r|\n|\t)/).map((part, index) =>
+    index % 2 ? part : normalizeSmartText(part).trim()).join("");
+}

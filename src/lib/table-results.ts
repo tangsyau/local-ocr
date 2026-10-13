@@ -1,3 +1,4 @@
+import { normalizeTableText } from "./text-normalization";
 import type { OcrResult, OcrTable, OcrTableCell } from "./types";
 
 export function rawTables(result: OcrResult | null): OcrTable[] {
@@ -6,8 +7,11 @@ export function rawTables(result: OcrResult | null): OcrTable[] {
 
 export function displayTables(result: OcrResult | null, mergeCrossPage: boolean): OcrTable[] {
   if (!result) return [];
-  if (result.partial) return result.tables;
-  return mergeCrossPage ? result.tables : rawTables(result);
+  if (!result.partial) return mergeCrossPage ? result.tables : rawTables(result);
+  const pages = result.pages.map(page => page.tables);
+  return mergeCrossPage
+    ? mergeTablePages(pages, result.pages.map((page, index) => page.pageIndex ?? index))
+    : rawTables(result);
 }
 
 function cloneCell(cell: OcrTableCell): OcrTableCell {
@@ -60,6 +64,10 @@ function rowsMatch(left: OcrTableCell[], right: OcrTableCell[]): boolean {
     cell.column === right[index].column && Math.max(1, cell.colSpan) === Math.max(1, right[index].colSpan)
   );
   if (!sameStructure) return false;
+  // Differing numbers usually identify data rows, not repeated headers.
+  // Do not discard them merely because the surrounding text is similar.
+  if (left.some((cell, index) => JSON.stringify(cell.text.match(/[0-9０-９]+/g) ?? [])
+    !== JSON.stringify(right[index].text.match(/[0-9０-９]+/g) ?? []))) return false;
   const similarities = left.map((cell, index) => {
     const leftText = normalizedText(cell.text);
     const rightText = normalizedText(right[index].text);
@@ -139,4 +147,38 @@ export function tableToTsv(table: OcrTable): string {
     }
   }
   return grid.map((row) => row.join("\t")).join("\n");
+}
+
+export function projectTables(tables: OcrTable[], clean: boolean): OcrTable[] {
+  if (!clean) return tables;
+  const escape = (s: string) => s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+  return tables.map(table => {
+    const rows = table.rows.map(row => row.map(cell => ({ ...cell, text: normalizeTableText(cell.text) })));
+    const html = "<table>" + rows.map(row => "<tr>" + row.map(cell =>
+      `<td rowspan="${cell.rowSpan}" colspan="${cell.colSpan}">${escape(cell.text)}</td>`).join("") + "</tr>").join("") + "</table>";
+    return { ...table, rows, html };
+  });
+}
+
+// Explain structural boundaries without changing the conservative merge policy.
+export function tableMergeIssues(pages: OcrTable[][], indices?: number[]): string[] {
+  const issues: string[] = [];
+  let candidate: OcrTable | undefined;
+  for (let i = 0; i < pages.length; i++) {
+    const current = pages[i], index = indices?.[i] ?? i;
+    if (current.length !== 1) {
+      issues.push(`第 ${index + 1} 页识别到 ${current.length} 张表（需恰好一张）`);
+      candidate = undefined;
+      continue;
+    }
+    if (i && candidate) {
+      const previous = indices?.[i - 1] ?? i - 1;
+      if (index !== previous + 1) issues.push(`第 ${previous + 1} 至 ${index + 1} 页不连续`);
+      else if (columnCount(candidate) !== columnCount(current[0])) issues.push(`第 ${index + 1} 页列数不一致`);
+      else if (repeatedHeaderRows(candidate, current[0])) continue;
+      else issues.push(`第 ${index + 1} 页未匹配到重复表头`);
+    }
+    candidate = current[0];
+  }
+  return issues;
 }

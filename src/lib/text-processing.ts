@@ -1,5 +1,5 @@
 import type { OcrBlock, OcrPage, OcrResult } from "./types";
-import { normalizeWithOffsets } from "./text-normalization";
+import { normalizeWithOffsets, normalizeTableText } from "./text-normalization";
 export { normalizeSmartText } from "./text-normalization";
 
 export interface TextSettings {
@@ -202,7 +202,11 @@ export function projectText(result: OcrResult, settings: TextSettings, edited = 
     return {text, html: [escapeHtml(result.text), tail?.html].filter(Boolean).join("\n\n"), raw,
       warnings: ["已校对部分保持不变；后续新页继续按当前设置整理。", ...(tail?.warnings ?? [])]};
   }
-  if (result.resultType === "table") return {text:result.text,html:escapeHtml(result.text),raw,warnings};
+  if (result.resultType === "table") {
+    const text = settings.textMode === "original" ? result.text : normalizeTableText(result.text);
+    if (settings.crossPageText) warnings.push("跨页正文仅用于普通文字结果；表格请使用合并跨页表格，并在表格标签查看结构。");
+    return {text, html:escapeHtml(text), raw, warnings};
+  }
   if (!result.pages.length) return {text:result.text,html:escapeHtml(result.text),raw,warnings};
   const pages = result.pages.map(p=>pageText(p,settings));
   const skip = new Set<string>();
@@ -214,17 +218,23 @@ export function projectText(result: OcrResult, settings: TextSettings, edited = 
     for (const page of pages) for (const key of new Set(page.lines.map(l=>l.margin).filter(Boolean))) frequency.set(key,(frequency.get(key)??0)+1);
     for (const [key,count] of frequency) if (key === "page-number" || (pages.length>=3 && count>=Math.max(3,Math.ceil(pages.length*.6)))) skip.add(key);
   }
-  let text="", html="", previous:PageText|undefined;
+  let text="", html="", previous:PageText|undefined, joinedBoundaries = 0;
   for (let i=0; i<pages.length; i++) {
     const page=(skip.size || dictionary.size) && !pages[i].legacy ? joinLines(pages[i].lines,settings.textMode,skip,dictionary) : pages[i];
     if (previous) {
       const consecutive=Number(result.pages[i].pageIndex)===Number(result.pages[i-1].pageIndex)+1;
       const sep=settings.crossPageText && complete && consecutive && previous.last && page.first
         ? separator(previous.last,page.first,settings.textMode,true) : "\n\n";
+      if (!sep.includes("\n")) joinedBoundaries++;
       if (!sep.includes("\n") && text.endsWith("\u00ad")) {text=text.slice(0,-1);html=html.replace(/\u00ad$/u,"");}
       text+=sep; html+=sep;
     }
     text+=page.text; html+=page.html; previous=page;
+  }
+  if (settings.crossPageText && pages.length > 1) {
+    if (settings.textMode === "original") warnings.push("当前保留原始断行，未连接跨页正文；请选择智能整理或连续文本。");
+    else if (!complete) warnings.push("全部所选页面完成后才连接跨页正文；当前保留页面边界。");
+    else warnings.push(joinedBoundaries ? `已连接 ${joinedBoundaries} 处跨页正文。` : "未找到可连接的跨页正文：页码须连续且有版面信息；句末、标题、缩进和方向变化等边界会保留。");
   }
   if (pages.some(p=>p.legacy) && result.resultType === "text") warnings.push("部分旧结果缺少版面坐标，已保留原文；重新识别后可使用完整整理功能。");
   if (settings.rubyEnabled && result.pages.some(p=>!p.rubyEnabled)) warnings.push("部分页面尚未提取注音；需重新识别，切换输出格式不会补识别。");

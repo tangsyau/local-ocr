@@ -93,12 +93,12 @@ class ProjectConfigTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(package["version"], "0.14.3")
+        self.assertEqual(package["version"], "0.14.5")
         self.assertEqual(standard_config["version"], package["version"])
         self.assertEqual(legacy_config["package"]["version"], package["version"])
         self.assertEqual(legacy_cli_package["version"], package["version"])
-        self.assertIn('version = "0.14.3"', standard_cargo)
-        self.assertIn('version = "0.14.3"', legacy_cargo)
+        self.assertIn('version = "0.14.5"', standard_cargo)
+        self.assertIn('version = "0.14.5"', legacy_cargo)
 
     def test_model_manager_uses_aligned_columns_and_one_deletion_flow(self) -> None:
         app = (ROOT / "src" / "App.vue").read_text(encoding="utf-8")
@@ -157,7 +157,7 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertIn("scrollFromTop", table_viewer)
         self.assertIn("resultFocusMode", app)
         self.assertIn("退出专注模式（Esc）", app)
-        self.assertIn("合并 PDF 或同批图片的连续表格", app)
+        self.assertIn("合并跨页表格", app)
         self.assertIn("imageBatchTables", app)
         self.assertIn("导出所选格式", app)
         self.assertIn('formats: outputFormats()', app)

@@ -111,10 +111,12 @@ describe("language-aware text projection",()=>{
     expect(ruby.text).toContain('薔薇（ばら<>&），中文');
     expect(JSON.stringify(r)).toBe(before);
   });
-  it('leaves table-mode text and coordinate-free legacy pages intact', () => {
+  it('cleans table text without changing its line structure and preserves legacy text', () => {
     const p=page([block('表 格 , 内容\n\n\n1.说明')]);
     const r=result([p]);
-    expect(projectText({...r,resultType:'table'},defaults).text).toBe(r.text);
+    expect(projectText({...r,resultType:'table'},defaults).text).toBe('表格，内容\n\n\n1．说明');
+    expect(projectText({...r,resultType:'table'},defaults,false,true).text).toBe(r.text);
+    expect(projectText({...r,resultType:'table'},defaults,true).text).toBe(r.text);
     expect(projectText(result([{...p,schemaVersion:undefined}]),defaults).text).toBe(p.text);
   });
   it("normalizes multilingual punctuation, OCR spaces and blank lines conservatively",()=>{

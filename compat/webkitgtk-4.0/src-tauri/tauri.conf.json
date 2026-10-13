@@ -8,7 +8,7 @@
   },
   "package": {
     "productName": "Local OCR WebKitGTK 4.0",
-    "version": "0.14.3"
+    "version": "0.14.5"
   },
   "tauri": {
     "allowlist": {

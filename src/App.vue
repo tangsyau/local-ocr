@@ -4,7 +4,7 @@ import TableResultViewer from "./components/TableResultViewer.vue";
 import ImagePreview from "./components/ImagePreview.vue";
 import { defaultTextSettings, normalizeTextSettings, projectText, verifyTextProcessingRuntime, type TextSettings } from "./lib/text-processing";
 import { ocrSidecar, SidecarRequestError } from "./lib/sidecar";
-import { displayTables, imageBatchTables, mergeTablePages, tableToTsv } from "./lib/table-results";
+import { displayTables, imageBatchTables, mergeTablePages, tableMergeIssues, projectTables, tableToTsv } from "./lib/table-results";
 import { naturalPathCompare, naturalSortPaths } from "./lib/file-order";
 import { appendResultPage, beginStreamingResult, canResumeResult, completeStreamingResult, finalizeResult } from "./lib/result-state";
 import { localImagePreview, createId, isWebkitGtk40Build, listenBeforeClose, listenFileDrop, openLocalDialog } from "./lib/tauri-bridge";
@@ -172,10 +172,17 @@ const selectedUsesImageBatch = computed(
   () => !queueRunning.value && selectedImageBatchTasks.value.length > 1 && selectedImageBatchTasks.value.some((task) => task.result)
 );
 const selectedBatchResults = computed(() => selectedImageBatchTasks.value.map((task) => task.result ?? null));
-const selectedTables = computed(() => selectedUsesImageBatch.value
+const selectedTables = computed(() => projectTables(selectedUsesImageBatch.value
   ? imageBatchTables(selectedBatchResults.value, mergeCrossPageTables.value)
-  : displayTables(selectedResult.value, mergeCrossPageTables.value)
+  : displayTables(selectedResult.value, mergeCrossPageTables.value), !rawTextView.value && textSettings.value.textMode !== "original")
 );
+const selectedTableMergeIssues = computed(() => {
+  if (!mergeCrossPageTables.value || !selectedResult.value) return [];
+  const result = selectedResult.value;
+  return selectedUsesImageBatch.value
+    ? tableMergeIssues(selectedBatchResults.value.map(r => r?.pages.flatMap(p => p.tables) ?? []))
+    : tableMergeIssues(result.pages.map(p => p.tables), result.pages.map((p, i) => p.pageIndex ?? i));
+});
 const selectedRawTableCount = computed(() => selectedUsesImageBatch.value
   ? imageBatchTables(selectedBatchResults.value, false).length
   : selectedResult.value?.rawTableCount ?? 0
@@ -616,7 +623,7 @@ async function exportCompletedTask(task: OcrTask, directory = autoExportDirector
     if (!directory || !outputFormats().length) throw new Error("请先选择自动导出目录和格式");
     if (!ocrSidecar.running && !(await startSidecar())) throw new Error("导出进程未就绪，请重试");
     const output = projectText(task.result, textSettings.value, task.textEdited, exportTextVersion.value === "original");
-    const tables = displayTables(task.result, mergeCrossPageTables.value);
+    const tables = projectTables(displayTables(task.result, mergeCrossPageTables.value), exportTextVersion.value !== "original" && textSettings.value.textMode !== "original");
     const response = await ocrSidecar.request<{count: number; exportedIds: string[]}>("export_results", {
       directory, formats: outputFormats(),
       textItems: [{ id: task.id, fileName: task.fileName, text: output.text, html: output.html, profile: task.result.profile, mode: task.resultType }],
@@ -922,7 +929,7 @@ async function copyDiagnostics(): Promise<void> {
   let runtimeCheck = false;
   try { runtimeCheck = verifyTextProcessingRuntime(); } catch { /* report failure without document contents */ }
   const diagnostics: DiagnosticInfo = {
-    appVersion: "0.14.3",
+    appVersion: "0.14.5",
     sidecarRunning: ocrSidecar.running,
     sidecarStderr: ocrSidecar.stderr ? "运行日志已省略，以免复制文档路径或识别相关输出" : "",
     ...remote,
@@ -1322,7 +1329,7 @@ function tableExportItems(): TableExportItem[] {
       });
     }
   }
-  return items;
+  return items.map(item => ({ ...item, tables: projectTables(item.tables, exportTextVersion.value !== "original" && textSettings.value.textMode !== "original") }));
 }
 
 async function exportSelectedFormats(): Promise<void> {
@@ -1580,10 +1587,6 @@ function showError(error: unknown): void {
           <label for="threshold"><span>最低置信度</span><strong>{{ scoreThreshold.toFixed(2) }}</strong></label>
           <p class="threshold-help">调高可能漏掉更多文字；下次 OCR 生效，文本层提取不受影响。</p>
           <input id="threshold" v-model.number="scoreThreshold" type="range" min="0" max="1" step="0.05" :disabled="modelControlsBusy" />
-          <label v-if="recognitionMode === 'table'" class="merge-setting">
-            <input v-model="mergeCrossPageTables" type="checkbox" :disabled="modelControlsBusy" />
-            <span>合并 PDF 或同批图片的连续表格</span>
-          </label>
           <div class="export-options">
             <span>导出格式</span>
             <label><input v-model="exportTxt" type="checkbox" :disabled="modelControlsBusy" />TXT</label>
@@ -1642,10 +1645,11 @@ function showError(error: unknown): void {
                 <span class="text-setting-name">文本整理</span>
                 <select v-model="textSettings.textMode" :disabled="queueRunning || exportBusy" aria-label="文本整理"><option value="original">保留原始断行</option><option value="smart">智能整理</option><option value="continuous">合并为连续文本</option></select>
               </label>
-              <label class="text-setting-field">
-                <span class="text-setting-name">跨页正文</span>
-                <span class="text-setting-toggle"><input v-model="textSettings.crossPageText" type="checkbox" :disabled="queueRunning || exportBusy" />合并相邻完整页面</span>
-              </label>
+              <div class="text-setting-field">
+                <span class="text-setting-name">跨页合并</span>
+                <label class="text-setting-toggle"><input v-model="textSettings.crossPageText" type="checkbox" :disabled="queueRunning || exportBusy" />连接跨页正文段落</label>
+                <label class="text-setting-toggle"><input v-model="mergeCrossPageTables" type="checkbox" :disabled="modelControlsBusy" />合并跨页表格</label>
+              </div>
               <label class="text-setting-field">
                 <span class="text-setting-name">日语注音</span>
                 <span class="text-setting-toggle"><input v-model="textSettings.rubyEnabled" type="checkbox" :disabled="modelControlsBusy" aria-label="识别日语注音" />识别横排与竖排注音</span>
@@ -1655,7 +1659,7 @@ function showError(error: unknown): void {
                 <select v-model="textSettings.rubyFormat" :disabled="queueRunning || exportBusy || (!textSettings.rubyEnabled && !hasRecognizedRuby)" aria-label="注音输出"><option value="ignore">忽略注音</option><option value="parentheses">括号保留</option><option value="ruby">Ruby 小字（HTML）</option></select>
               </label>
             </div>
-            <p class="text-settings-help">文字来源和注音识别用于下次识别；整理与注音格式立即作用于已有文字结果，保留手动校对。页码和旋转仅用于当前文件。文本层内容异常时可用强制 OCR。</p>
+            <p class="text-settings-help">文字来源和注音识别用于下次识别；整理立即作用于已有结果，保留手动校对；表格仅清洗单元格文字，不合并单元格内换行。注音格式仅用于普通文字。页码和旋转仅用于当前文件。文本层内容异常时可用强制 OCR。</p>
           </details>
           <div v-if="selectedTask" class="document-controls">
             <template v-if="isPdf">
@@ -1733,13 +1737,14 @@ function showError(error: unknown): void {
             </div>
           </div>
           <div v-if="selectedResult" class="result-body">
-            <div v-if="resultView === 'text'" class="text-result-tools">
-              <div v-if="!resultFocusMode" class="text-view-switch" role="tablist" aria-label="识别结果版本">
+            <div class="text-result-tools">
+              <div v-if="!resultFocusMode || resultView === 'tables'" class="text-view-switch" role="tablist" aria-label="识别结果版本">
                 <button type="button" :class="{ active: rawTextView }" role="tab" :aria-selected="rawTextView" :disabled="exportBusy || queueRunning" @click="rawTextView = true">整理前</button>
                 <button type="button" :class="{ active: !rawTextView }" role="tab" :aria-selected="!rawTextView" :disabled="exportBusy || queueRunning" @click="rawTextView = false">整理后</button>
               </div>
-              <label v-if="textSettings.rubyFormat === 'ruby' && (resultFocusMode || !rawTextView) && !selectedTask?.textEdited" title="关闭后以普通文本显示，便于直接校对"><input v-model="rubyPreview" type="checkbox" />显示日语注音（Ruby）</label>
+              <label v-if="resultView === 'text' && textSettings.rubyFormat === 'ruby' && (resultFocusMode || !rawTextView) && !selectedTask?.textEdited" title="关闭后以普通文本显示，便于直接校对"><input v-model="rubyPreview" type="checkbox" />显示日语注音（Ruby）</label>
               <button v-if="selectedTask?.textEdited" :disabled="queueRunning || exportBusy" @click="discardTextEdits">恢复自动整理版</button>
+              <small v-if="resultView === 'tables' && selectedTableMergeIssues.length">未合并原因：{{ selectedTableMergeIssues.slice(0, 4).join("；") }}{{ selectedTableMergeIssues.length > 4 ? `；另有 ${selectedTableMergeIssues.length - 4} 处` : "" }}</small>
               <small v-for="message in textProjection.warnings" :key="message">{{ message }}</small>
               <small>来源：文本层 {{ selectedResult.pages.filter(p=>p.source === 'pdf-text').length }} 页 · OCR {{ selectedResult.pages.filter(p=>p.source === 'ocr').length }} 页 · 旧结果未记录 {{ selectedResult.pages.filter(p=>!p.source).length }} 页。</small>
               <small>本结果：{{ selectedResult.profile === 'fast' ? '轻量' : '高精度' }} · {{ selectedTask?.resultType === 'table' ? '表格与文字' : '普通文字' }} · 页码 {{ selectedResult.pageRange || '全部页' }} · 注音{{ selectedResult.rubyEnabled ? '已启用' : '未启用' }}。</small>
